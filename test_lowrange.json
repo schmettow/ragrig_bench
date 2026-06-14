@@ -1,0 +1,16 @@
+{
+  "questions": [
+    "What is New Statistics?",
+    "What are random effects good for?",
+    "Explain to me how I use link functions correctly?",
+    "How do I deal with rating scales?",
+    "How can you use a factor in a linear model?",
+    "I have a sample of children evaluate a sample of school chairs using a 5 item Likert scale. What model should I use?"
+  ],
+  "folders": ["@fixtures/html"],
+  "agents": [
+    { "backend": "ollama", "model": "deepseek-r1:8b", "context_size": 4096 },
+    { "backend": "ollama", "model": "gemma4:e4b", "context_size": 4096 },
+    { "backend": "ollama", "model": "gemma2:latest", "context_size": 4096 }
+  ]
+}

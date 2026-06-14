@@ -37,11 +37,11 @@ struct Cli {
     embed_model: String,
 
     /// Number of chunks to retrieve per query (top-k).
-    #[arg(short = 'k', long, default_value = "25")]
+    #[arg(short = 'k', long, default_value = "80")]
     top_k: usize,
 
     /// Minimum hybrid RRF score for a chunk to be included.
-    #[arg(short = 't', long, default_value = "0.3")]
+    #[arg(short = 't', long, default_value = "0.1")]
     similarity_threshold: f64,
 }
 
@@ -255,6 +255,8 @@ async fn main() -> Result<()> {
                     &question[..question.len().min(60)]
                 );
 
+                let start = std::time::Instant::now();
+
                 let result = run_query(
                     &*embedder,
                     cli.top_k,
@@ -267,11 +269,22 @@ async fn main() -> Result<()> {
                 )
                 .await;
 
+                let elapsed = start.elapsed();
+
                 println!("#### {}", folder_state.name);
                 println!();
                 match result {
-                    Ok(answer) => {
-                        println!("{}", answer.trim());
+                    Ok(ref qr) => {
+                        println!(
+                            "_t={:.1} · k={} → {} · {} ctx · {:.1}s_",
+                            cli.similarity_threshold,
+                            cli.top_k,
+                            qr.chunks_found,
+                            effective_ctx,
+                            elapsed.as_secs_f64(),
+                        );
+                        println!();
+                        println!("{}", qr.answer.trim());
                     }
                     Err(e) => {
                         println!("_Error: {}_", e);
@@ -293,6 +306,11 @@ fn build_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> 
 
 // ── Single query execution (no history) ─────────────────────────────────────
 
+struct QueryResult {
+    answer: String,
+    chunks_found: usize,
+}
+
 async fn run_query(
     embedder: &dyn ragrig::embed::Embedder,
     top_k: usize,
@@ -302,7 +320,7 @@ async fn run_query(
     prompts: &SystemPrompts,
     question: &str,
     chat: &dyn ragrig::agents::Generator,
-) -> Result<String> {
+) -> Result<QueryResult> {
     let embedded = embedder.embed(vec![question.to_string()]).await?;
     let query_vec: Vec<f32> = embedded
         .first()
@@ -310,8 +328,12 @@ async fn run_query(
         .ok_or_else(|| anyhow!("Failed to get query embedding"))?;
 
     let results = store.search(&query_vec, question, top_k, threshold).await?;
-    if results.is_empty() {
-        return Ok("_(no relevant documents found)_".into());
+    let chunks_found = results.len();
+    if chunks_found == 0 {
+        return Ok(QueryResult {
+            answer: "_(no relevant documents found)_".into(),
+            chunks_found: 0,
+        });
     }
 
     let context = results
@@ -335,7 +357,11 @@ async fn run_query(
         question
     );
 
-    chat.generate(&full_prompt).await
+    let answer = chat.generate(&full_prompt).await?;
+    Ok(QueryResult {
+        answer,
+        chunks_found,
+    })
 }
 
 // ── Tiny local-date helper ──────────────────────────────────────────────────
