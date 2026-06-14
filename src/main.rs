@@ -37,11 +37,11 @@ struct Cli {
     embed_model: String,
 
     /// Number of chunks to retrieve per query (top-k).
-    #[arg(short = 'k', long, default_value = "10")]
+    #[arg(short = 'k', long, default_value = "25")]
     top_k: usize,
 
     /// Minimum hybrid RRF score for a chunk to be included.
-    #[arg(short = 't', long, default_value = "0.4")]
+    #[arg(short = 't', long, default_value = "0.3")]
     similarity_threshold: f64,
 }
 

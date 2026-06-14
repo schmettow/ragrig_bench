@@ -36,8 +36,8 @@ async fn main() -> Result<()> {
         embedding_concurrency: 32,
         chunk_size: 1024,
         chunk_overlap: 128,
-        top_k: 10,
-        similarity_threshold: 0.4,
+        top_k: 25,
+        similarity_threshold: 0.3,
         model_ctx_tokens: 4096,
         context_size_forced: false,
     };

@@ -248,8 +248,8 @@ Arguments:
 Options:
   -c, --context-size <N>       Default context window (tokens) [default: 4096]
   -e, --embed-model <MODEL>    Embedding model [default: nomic-embed-text]
-  -k, --top-k <N>              Chunks retrieved per query [default: 10]
-  -t, --similarity-threshold <F>  Minimum hybrid RRF score [default: 0.4]
+  -k, --top-k <N>              Chunks retrieved per query [default: 25]
+  -t, --similarity-threshold <F>  Minimum hybrid RRF score [default: 0.3]
   -h, --help                   Print help
   -V, --version                Print version
 ```
