@@ -1,11 +1,13 @@
 use anyhow::{Result, anyhow};
+use clap::Parser;
+use include_dir::Dir;
 use ragrig::{
     Args, ChatAgentSpec, EmbedderSpec, EmbeddingProvider, HashMetadata,
     PdfParserBackend, Provider, SystemPrompts,
     embed_documents,
     get_changed_documents, get_document_file_hashes, get_embeddings_file_path,
     parsers::{DocumentParsers, build_parsers},
-    remove_deleted_embeddings, search_similar,
+    remove_deleted_embeddings,
     store::open_store,
     update_file_hashes,
 };
@@ -14,14 +16,41 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const EMBED_MODEL: &str = "nomic-embed-text";
+const FIXTURE_PREFIX: &str = "@fixtures/";
+
+// ── CLI ─────────────────────────────────────────────────────────────────────
+
+/// Benchmark ragrig retrieval quality across multiple folders, questions,
+/// and chat backends.  Results are written to stdout as Markdown.
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Path to the JSON benchmark configuration file.
+    config: String,
+
+    /// Context window budget for prompt truncation (tokens).
+    #[arg(short = 'c', long, default_value = "4096")]
+    context_size: usize,
+
+    /// Embedding model passed to Ollama.
+    #[arg(short = 'e', long, default_value = "nomic-embed-text")]
+    embed_model: String,
+
+    /// Number of chunks to retrieve per query (top-k).
+    #[arg(short = 'k', long, default_value = "10")]
+    top_k: usize,
+
+    /// Minimum hybrid RRF score for a chunk to be included.
+    #[arg(short = 't', long, default_value = "0.4")]
+    similarity_threshold: f64,
+}
 
 // ── Input schema ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct BenchmarkConfig {
     questions: Vec<String>,
-    folders: Vec<PathBuf>,
+    folders: Vec<String>,
     agents: Vec<AgentConfig>,
 }
 
@@ -31,28 +60,85 @@ struct AgentConfig {
     model: String,
     #[serde(default)]
     api_key: Option<String>,
+    /// Per-agent context window override (tokens).  Falls back to the CLI
+    /// `--context-size` value when absent.
+    #[serde(default)]
+    context_size: Option<usize>,
 }
 
 // ── Per-folder indexed state ────────────────────────────────────────────────
 
 struct FolderState {
     name: String,
-    args: Args,
     store: Box<dyn ragrig::store::VectorStore>,
+    _temp: Option<TempFixtureDir>,
+}
+
+/// Holds a temp directory alive until dropped, then cleans it up.
+struct TempFixtureDir(PathBuf);
+
+impl Drop for TempFixtureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+// ── Fixture resolution ──────────────────────────────────────────────────────
+
+fn resolve_fixture_folder(raw: &str) -> Result<(PathBuf, String, TempFixtureDir)> {
+    let format = raw.strip_prefix(FIXTURE_PREFIX)
+        .ok_or_else(|| anyhow!("Fixture path must start with '{}'", FIXTURE_PREFIX))?;
+
+    let dir: &Dir = match format {
+        "pdf" => &ragrig::fixtures::pdf::DIR,
+        "html" => &ragrig::fixtures::html::DIR,
+        "rmd" => &ragrig::fixtures::rmd::DIR,
+        other => anyhow::bail!(
+            "Unknown fixture format '{}'. Available: pdf, html, rmd",
+            other
+        ),
+    };
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    let temp = std::env::temp_dir().join(format!("ragrig_bench_{}_{}", format, ts));
+    std::fs::create_dir_all(&temp)?;
+
+    let mut count = 0;
+    for entry in dir.files() {
+        let name = entry
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        std::fs::write(temp.join(name), entry.contents())?;
+        count += 1;
+    }
+    eprintln!(
+        "  Extracted {} fixture files → {}",
+        count,
+        temp.display()
+    );
+
+    let display_name = format!("{} (fixture)", format);
+    let temp_guard = TempFixtureDir(temp.clone());
+    Ok((temp, display_name, temp_guard))
 }
 
 // ── Helper: construct Args for a given folder ───────────────────────────────
 
-fn make_args(folder: &Path) -> Args {
+fn make_args(folder: &Path, cli: &Cli) -> Args {
     Args {
         folder: folder.to_path_buf(),
         provider: Provider::Ollama,
-        model: String::new(), // not used — agents come from config
+        model: String::new(),
         deepseek_api_key: None,
         deepseek_model: String::new(),
         semantic_scholar_api_key: None,
         embedding_provider: EmbeddingProvider::Ollama,
-        embedding_model: EMBED_MODEL.into(),
+        embedding_model: cli.embed_model.clone(),
         history_model: String::new(),
         prompt_chat: None,
         prompt_rewrite: None,
@@ -62,9 +148,10 @@ fn make_args(folder: &Path) -> Args {
         embedding_concurrency: 32,
         chunk_size: 1024,
         chunk_overlap: 128,
-        top_k: 10,
-        similarity_threshold: 0.4,
-        model_ctx_tokens: 4096,
+        top_k: cli.top_k,
+        similarity_threshold: cli.similarity_threshold,
+        model_ctx_tokens: cli.context_size,
+        context_size_forced: false,
     }
 }
 
@@ -72,11 +159,9 @@ fn make_args(folder: &Path) -> Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config_path = std::env::args()
-        .nth(1)
-        .ok_or_else(|| anyhow!("Usage: ragrig_bench <config.json>"))?;
+    let cli = Cli::parse();
 
-    let raw = std::fs::read_to_string(&config_path)?;
+    let raw = std::fs::read_to_string(&cli.config)?;
     let config: BenchmarkConfig = serde_json::from_str(&raw)?;
 
     if config.questions.is_empty() {
@@ -89,20 +174,31 @@ async fn main() -> Result<()> {
         anyhow::bail!("Config must contain at least one agent.");
     }
 
-    // Shared embedder (all folders use the same embedding model).
     let embedder = EmbedderSpec::Ollama {
-        model: EMBED_MODEL.into(),
+        model: cli.embed_model.clone(),
     }
     .build()?;
     let parsers = DocumentParsers::new(build_parsers());
     let prompts = SystemPrompts::default();
 
-    // Index every folder (incremental), collecting per-folder state.
+    // Resolve folders — fixtures get extracted to temp dirs.
     let mut folder_states: Vec<FolderState> = Vec::new();
-    for folder in &config.folders {
-        let args = make_args(folder);
+    for raw in &config.folders {
+        let (folder_path, display_name, temp_guard) = if raw.starts_with(FIXTURE_PREFIX) {
+            let (p, name, guard) = resolve_fixture_folder(raw)?;
+            (p, name, Some(guard))
+        } else {
+            let p = PathBuf::from(raw);
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| raw.clone());
+            (p, name, None)
+        };
+
+        let args = make_args(&folder_path, &cli);
         let store = open_store(&args.folder).await?;
-        eprintln!("Indexing {} …", folder.display());
+        eprintln!("Indexing {} …", folder_path.display());
 
         let current_hashes = get_document_file_hashes(&args.folder)?;
         let hashes_path = get_embeddings_file_path(&args.folder);
@@ -126,12 +222,9 @@ async fn main() -> Result<()> {
 
         eprintln!("  {} chunks ready.", store.len());
         folder_states.push(FolderState {
-            name: folder
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| folder.to_string_lossy().into_owned()),
-            args,
+            name: display_name,
             store,
+            _temp: temp_guard,
         });
     }
 
@@ -141,25 +234,32 @@ async fn main() -> Result<()> {
     println!("# RAG Benchmark — {}", today);
     println!();
 
-    // ── Query loop ──────────────────────────────────────────────────────
+    // ── Query loop (agent outer → model stays loaded) ────────────────────
 
-    for (qi, question) in config.questions.iter().enumerate() {
-        println!("## Q{}: {}", qi + 1, question);
+    for agent_cfg in &config.agents {
+        let agent_label = format!("{} / {}", agent_cfg.backend, agent_cfg.model);
+        let effective_ctx = agent_cfg.context_size.unwrap_or(cli.context_size);
+        let chat = build_agent(agent_cfg)?;
+
+        println!("## {}", agent_label);
         println!();
 
-        for folder_state in &folder_states {
-            for agent_cfg in &config.agents {
-                let label = format!(
-                    "{} · {} / {}",
-                    folder_state.name, agent_cfg.backend, agent_cfg.model
-                );
-                eprintln!("  {} ← \"{}\"", label, &question[..question.len().min(60)]);
+        for (qi, question) in config.questions.iter().enumerate() {
+            println!("### Q{}: {}", qi + 1, question);
+            println!();
 
-                let chat = build_agent(agent_cfg)?;
+            for folder_state in &folder_states {
+                eprintln!(
+                    "  {} ← \"{}\"",
+                    agent_label,
+                    &question[..question.len().min(60)]
+                );
 
                 let result = run_query(
                     &*embedder,
-                    &folder_state.args,
+                    cli.top_k,
+                    cli.similarity_threshold,
+                    effective_ctx,
                     &*folder_state.store,
                     &prompts,
                     question,
@@ -167,7 +267,7 @@ async fn main() -> Result<()> {
                 )
                 .await;
 
-                println!("### {}", label);
+                println!("#### {}", folder_state.name);
                 println!();
                 match result {
                     Ok(answer) => {
@@ -195,13 +295,21 @@ fn build_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> 
 
 async fn run_query(
     embedder: &dyn ragrig::embed::Embedder,
-    args: &Args,
+    top_k: usize,
+    threshold: f64,
+    _context_size: usize,
     store: &dyn ragrig::store::VectorStore,
     prompts: &SystemPrompts,
     question: &str,
     chat: &dyn ragrig::agents::Generator,
 ) -> Result<String> {
-    let results = search_similar(embedder, args, store, question).await?;
+    let embedded = embedder.embed(vec![question.to_string()]).await?;
+    let query_vec: Vec<f32> = embedded
+        .first()
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| anyhow!("Failed to get query embedding"))?;
+
+    let results = store.search(&query_vec, question, top_k, threshold).await?;
     if results.is_empty() {
         return Ok("_(no relevant documents found)_".into());
     }
@@ -230,7 +338,7 @@ async fn run_query(
     chat.generate(&full_prompt).await
 }
 
-// ── Tiny local-date helper (no chrono dep) ─────────────────────────────────
+// ── Tiny local-date helper ──────────────────────────────────────────────────
 
 fn chrono_lite() -> Result<String> {
     let output = std::process::Command::new("date")

@@ -1,0 +1,19 @@
+{
+  "questions": [
+    "What is New Statistics?",
+    "What are random effects good for?",
+    "I have a sample of children evaluate a sample of school chairs using a 5 item Likert scale. What model should I use?",
+    "How do I make a choice between fixed and random effects?",
+    "How do I know what effects I need in a model? How to make the choice?",
+    "In model building, how do I determine whether to use a fixed or random effect, and can these effects be compared? Additionally, under what circumstances should additional effects be stopped in the model construction process?",
+    "Explain to me how I use link functions correctly?",
+    "How do I deal with rating scales?",
+    "How can you use a factor in a linear model?"
+  ],
+  "folders": ["@fixtures/html"],
+  "agents": [
+    { "backend": "ollama", "model": "phi4", "context_size": 8192 },
+    { "backend": "ollama", "model": "phi4", "context_size": 4096 },
+    { "backend": "ollama", "model": "deepseek-r1:14b", "context_size": 4096 }
+  ]
+}
