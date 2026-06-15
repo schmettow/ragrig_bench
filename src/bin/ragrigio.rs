@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ragrig::{
-    Args, ChatAgentSpec, EmbedderSpec, EmbeddingProvider, HashMetadata,
-    PdfParserBackend, Provider, SystemPrompts,
+    ChatAgentSpec, ChunkConfig, EmbedderSpec, HashMetadata,
+    SystemPrompts,
     embed_documents,
     get_changed_documents, get_document_file_hashes, get_embeddings_file_path,
     parsers::{DocumentParsers, build_parsers},
@@ -18,29 +18,10 @@ const EMBED_MODEL: &str = "nomic-embed-text";
 async fn main() -> Result<()> {
     let cwd = std::env::current_dir()?;
 
-    let args = Args {
-        folder: cwd,
-        provider: Provider::Ollama,
-        model: CHAT_MODEL.into(),
-        deepseek_api_key: None,
-        deepseek_model: String::new(),
-        semantic_scholar_api_key: None,
-        embedding_provider: EmbeddingProvider::Ollama,
-        embedding_model: EMBED_MODEL.into(),
-        memory_model: String::new(),
-        prompt_chat: None,
-        prompt_rewrite: None,
-        sloppy_pdf: false,
-        pdf_parser: PdfParserBackend::Sink,
-        threads: 4,
-        embedding_concurrency: 32,
-        chunk_size: 1024,
-        chunk_overlap: 128,
-        top_k: 25,
-        similarity_threshold: 0.3,
-        model_ctx_tokens: 4096,
-        context_size_forced: false,
-    };
+    let top_k: usize = 25;
+    let similarity_threshold: f64 = 0.3;
+
+    let config = ChunkConfig { size: 1024, overlap: 128 };
 
     let embedder = EmbedderSpec::Ollama {
         model: EMBED_MODEL.into(),
@@ -54,10 +35,10 @@ async fn main() -> Result<()> {
     let prompts = SystemPrompts::default();
 
     // ---- Incremental indexing ----
-    let store = open_store(&args.folder).await?;
-    let hashes_path = get_embeddings_file_path(&args.folder);
+    let store = open_store(&cwd).await?;
+    let hashes_path = get_embeddings_file_path(&cwd);
 
-    let current_hashes = get_document_file_hashes(&args.folder)?;
+    let current_hashes = get_document_file_hashes(&cwd)?;
     let stored_meta: Option<HashMetadata> = if hashes_path.exists() {
         let raw = std::fs::read_to_string(&hashes_path)?;
         Some(serde_json::from_str(&raw)?)
@@ -72,7 +53,7 @@ async fn main() -> Result<()> {
     let changed = get_changed_documents(&current_hashes, stored_entries);
     if !changed.is_empty() {
         eprintln!("Indexing {} changed document(s) …", changed.len());
-        embed_documents(&*embedder, &parsers, &args, changed, &*store).await?;
+        embed_documents(&*embedder, &parsers, &config, changed, &*store).await?;
     }
     remove_deleted_embeddings(&*store, &current_hashes).await?;
     update_file_hashes(&current_hashes, &hashes_path)?;
@@ -94,7 +75,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Failed to get query embedding"))?;
 
     let results = store
-        .search(&query_vec, query, args.top_k, args.similarity_threshold)
+        .search(&query_vec, query, top_k, similarity_threshold)
         .await?;
     if results.is_empty() {
         println!("No relevant documents found.");

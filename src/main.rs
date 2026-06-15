@@ -2,8 +2,8 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use include_dir::Dir;
 use ragrig::{
-    Args, ChatAgentSpec, EmbedderSpec, EmbeddingProvider, HashMetadata,
-    PdfParserBackend, Provider, SystemPrompts, TranscriptMemory,
+    ChatAgentSpec, ChunkConfig, EmbedderSpec, HashMetadata,
+    SystemPrompts, TranscriptMemory,
     embed_documents,
     get_changed_documents, get_document_file_hashes, get_embeddings_file_path,
     parsers::{DocumentParsers, build_parsers},
@@ -13,7 +13,7 @@ use ragrig::{
 };
 use serde::Deserialize;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 const FIXTURE_PREFIX: &str = "@fixtures/";
@@ -132,32 +132,10 @@ fn resolve_fixture_folder(raw: &str) -> Result<(PathBuf, String, TempFixtureDir)
     Ok((temp, display_name, temp_guard))
 }
 
-// ── Helper: construct Args for a given folder ───────────────────────────────
+// ── Chunking config (shared across all folders) ──────────────────────────────
 
-fn make_args(folder: &Path, cli: &Cli) -> Args {
-    Args {
-        folder: folder.to_path_buf(),
-        provider: Provider::Ollama,
-        model: String::new(),
-        deepseek_api_key: None,
-        deepseek_model: String::new(),
-        semantic_scholar_api_key: None,
-        embedding_provider: EmbeddingProvider::Ollama,
-        embedding_model: cli.embed_model.clone(),
-        memory_model: String::new(),
-        prompt_chat: None,
-        prompt_rewrite: None,
-        sloppy_pdf: false,
-        pdf_parser: PdfParserBackend::Unpdf,
-        threads: 8,
-        embedding_concurrency: 32,
-        chunk_size: 1024,
-        chunk_overlap: 128,
-        top_k: cli.top_k,
-        similarity_threshold: cli.similarity_threshold,
-        model_ctx_tokens: cli.context_size,
-        context_size_forced: false,
-    }
+fn chunk_config() -> ChunkConfig {
+    ChunkConfig { size: 1024, overlap: 128 }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -206,12 +184,12 @@ async fn main() -> Result<()> {
             (p, name, None)
         };
 
-        let args = make_args(&folder_path, &cli);
-        let store = open_store(&args.folder).await?;
+        let config = chunk_config();
+        let store = open_store(&folder_path).await?;
         eprintln!("Indexing {} …", folder_path.display());
 
-        let current_hashes = get_document_file_hashes(&args.folder)?;
-        let hashes_path = get_embeddings_file_path(&args.folder);
+        let current_hashes = get_document_file_hashes(&folder_path)?;
+        let hashes_path = get_embeddings_file_path(&folder_path);
         let stored_meta: Option<HashMetadata> = if hashes_path.exists() {
             let raw = std::fs::read_to_string(&hashes_path)?;
             Some(serde_json::from_str(&raw)?)
@@ -225,7 +203,7 @@ async fn main() -> Result<()> {
         let changed = get_changed_documents(&current_hashes, stored_entries);
 
         if !changed.is_empty() {
-            embed_documents(&*embedder, &parsers, &args, changed, &*store).await?;
+            embed_documents(&*embedder, &parsers, &config, changed, &*store).await?;
         }
         remove_deleted_embeddings(&*store, &current_hashes).await?;
         update_file_hashes(&current_hashes, &hashes_path)?;
