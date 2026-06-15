@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use include_dir::Dir;
 use ragrig::{
     ChatAgentSpec, ChunkConfig, EmbedderSpec, HashMetadata,
     SystemPrompts, TranscriptMemory,
@@ -12,11 +11,7 @@ use ragrig::{
     update_file_hashes,
 };
 use serde::Deserialize;
-use std::{
-    path::PathBuf,
-};
-
-const FIXTURE_PREFIX: &str = "@fixtures/";
+use std::path::PathBuf;
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -76,60 +71,7 @@ struct AgentConfig {
 struct FolderState {
     name: String,
     store: Box<dyn ragrig::store::VectorStore>,
-    _temp: Option<TempFixtureDir>,
-}
-
-/// Holds a temp directory alive until dropped, then cleans it up.
-struct TempFixtureDir(PathBuf);
-
-impl Drop for TempFixtureDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-// ── Fixture resolution ──────────────────────────────────────────────────────
-
-fn resolve_fixture_folder(raw: &str) -> Result<(PathBuf, String, TempFixtureDir)> {
-    let format = raw.strip_prefix(FIXTURE_PREFIX)
-        .ok_or_else(|| anyhow!("Fixture path must start with '{}'", FIXTURE_PREFIX))?;
-
-    let dir: &Dir = match format {
-        "pdf" => &ragrig::fixtures::pdf::DIR,
-        "html" => &ragrig::fixtures::html::DIR,
-        "rmd" => &ragrig::fixtures::rmd::DIR,
-        other => anyhow::bail!(
-            "Unknown fixture format '{}'. Available: pdf, html, rmd",
-            other
-        ),
-    };
-
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros();
-    let temp = std::env::temp_dir().join(format!("ragrig_bench_{}_{}", format, ts));
-    std::fs::create_dir_all(&temp)?;
-
-    let mut count = 0;
-    for entry in dir.files() {
-        let name = entry
-            .path()
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        std::fs::write(temp.join(name), entry.contents())?;
-        count += 1;
-    }
-    eprintln!(
-        "  Extracted {} fixture files → {}",
-        count,
-        temp.display()
-    );
-
-    let display_name = format!("{} (fixture)", format);
-    let temp_guard = TempFixtureDir(temp.clone());
-    Ok((temp, display_name, temp_guard))
+    _temp: Option<tempfile::TempDir>,
 }
 
 // ── Chunking config (shared across all folders) ──────────────────────────────
@@ -172,17 +114,20 @@ async fn main() -> Result<()> {
     // Resolve folders — fixtures get extracted to temp dirs.
     let mut folder_states: Vec<FolderState> = Vec::new();
     for raw in &config.folders {
-        let (folder_path, display_name, temp_guard) = if raw.starts_with(FIXTURE_PREFIX) {
-            let (p, name, guard) = resolve_fixture_folder(raw)?;
-            (p, name, Some(guard))
-        } else {
-            let p = PathBuf::from(raw);
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| raw.clone());
-            (p, name, None)
-        };
+        let (folder_path, display_name, temp_guard) =
+            if let Some(format) = raw.strip_prefix("@fixtures/") {
+                let (p, dir) = ragrig::fixtures::extract_fixtures(format)?;
+                let name = format!("{} (fixture)", format);
+                eprintln!("  Extracted {} fixtures → {}", format, p.display());
+                (p, name, Some(dir))
+            } else {
+                let p = PathBuf::from(raw);
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| raw.clone());
+                (p, name, None)
+            };
 
         let config = chunk_config();
         let store = open_store(&folder_path).await?;
