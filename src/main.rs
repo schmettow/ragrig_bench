@@ -3,7 +3,7 @@ use clap::Parser;
 use include_dir::Dir;
 use ragrig::{
     Args, ChatAgentSpec, EmbedderSpec, EmbeddingProvider, HashMetadata,
-    PdfParserBackend, Provider, SystemPrompts,
+    PdfParserBackend, Provider, SystemPrompts, TranscriptHistory,
     embed_documents,
     get_changed_documents, get_document_file_hashes, get_embeddings_file_path,
     parsers::{DocumentParsers, build_parsers},
@@ -49,7 +49,12 @@ struct Cli {
 
 #[derive(Deserialize)]
 struct BenchmarkConfig {
+    /// Independent queries — no history between them.
+    #[serde(default)]
     questions: Vec<String>,
+    /// Sequential chat — each response feeds into the next prompt.
+    #[serde(default)]
+    chat: Vec<String>,
     folders: Vec<String>,
     agents: Vec<AgentConfig>,
 }
@@ -164,8 +169,11 @@ async fn main() -> Result<()> {
     let raw = std::fs::read_to_string(&cli.config)?;
     let config: BenchmarkConfig = serde_json::from_str(&raw)?;
 
-    if config.questions.is_empty() {
-        anyhow::bail!("Config must contain at least one question.");
+    if config.questions.is_empty() && config.chat.is_empty() {
+        anyhow::bail!("Config must contain 'questions' or 'chat'.");
+    }
+    if !config.questions.is_empty() && !config.chat.is_empty() {
+        anyhow::bail!("Config must not contain both 'questions' and 'chat' — pick one.");
     }
     if config.folders.is_empty() {
         anyhow::bail!("Config must contain at least one folder.");
@@ -173,6 +181,8 @@ async fn main() -> Result<()> {
     if config.agents.is_empty() {
         anyhow::bail!("Config must contain at least one agent.");
     }
+
+    let chat_mode = !config.chat.is_empty();
 
     let embedder = EmbedderSpec::Ollama {
         model: cli.embed_model.clone(),
@@ -244,53 +254,67 @@ async fn main() -> Result<()> {
         println!("## {}", agent_label);
         println!();
 
-        for (qi, question) in config.questions.iter().enumerate() {
-            println!("### Q{}: {}", qi + 1, question);
-            println!();
-
-            for folder_state in &folder_states {
-                eprintln!(
-                    "  {} ← \"{}\"",
-                    agent_label,
-                    &question[..question.len().min(60)]
-                );
-
-                let start = std::time::Instant::now();
-
-                let result = run_query(
-                    &*embedder,
-                    cli.top_k,
-                    cli.similarity_threshold,
-                    effective_ctx,
-                    &*folder_state.store,
-                    &prompts,
-                    question,
-                    &*chat,
-                )
-                .await;
-
-                let elapsed = start.elapsed();
-
-                println!("#### {}", folder_state.name);
+        if chat_mode {
+            run_chat_mode(
+                &*embedder,
+                &cli,
+                effective_ctx,
+                &folder_states,
+                &prompts,
+                &config.chat,
+                &*chat,
+                &agent_label,
+            )
+            .await?;
+        } else {
+            for (qi, question) in config.questions.iter().enumerate() {
+                println!("### Q{}: {}", qi + 1, question);
                 println!();
-                match result {
-                    Ok(ref qr) => {
-                        println!(
-                            "_t={:.1} · k={} → {} · {} ctx · {:.1}s_",
-                            cli.similarity_threshold,
-                            cli.top_k,
-                            qr.chunks_found,
-                            effective_ctx,
-                            elapsed.as_secs_f64(),
-                        );
-                        println!();
-                        println!("{}", qr.answer.trim());
+
+                for folder_state in &folder_states {
+                    eprintln!(
+                        "  {} ← \"{}\"",
+                        agent_label,
+                        &question[..question.len().min(60)]
+                    );
+
+                    let start = std::time::Instant::now();
+
+                    let result = run_query(
+                        &*embedder,
+                        cli.top_k,
+                        cli.similarity_threshold,
+                        effective_ctx,
+                        &*folder_state.store,
+                        &prompts,
+                        question,
+                        &*chat,
+                    )
+                    .await;
+
+                    let elapsed = start.elapsed();
+
+                    println!("#### {}", folder_state.name);
+                    println!();
+                    match result {
+                        Ok(ref qr) => {
+                            println!(
+                                "_t={:.1} · k={} → {} · {} ctx · {:.1}s_",
+                                cli.similarity_threshold,
+                                cli.top_k,
+                                qr.chunks_found,
+                                effective_ctx,
+                                elapsed.as_secs_f64(),
+                            );
+                            println!();
+                            println!("{}", qr.answer.trim());
+                        }
+                        Err(e) => {
+                            println!("_Error: {}_", e);
+                        }
                     }
-                    Err(e) => {
-                        println!("_Error: {}_", e);
-                    }
+                    println!();
                 }
-                println!();
             }
         }
     }
@@ -302,6 +326,119 @@ async fn main() -> Result<()> {
 
 fn build_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> {
     ChatAgentSpec::parse(&cfg.backend, Some(&cfg.model), cfg.api_key.as_deref())?.build()
+}
+
+// ── Chat mode (sequential conversation with history) ────────────────────────
+
+async fn run_chat_mode(
+    embedder: &dyn ragrig::embed::Embedder,
+    cli: &Cli,
+    effective_ctx: usize,
+    folder_states: &[FolderState],
+    prompts: &SystemPrompts,
+    messages: &[String],
+    chat: &dyn ragrig::agents::Generator,
+    agent_label: &str,
+) -> Result<()> {
+    println!("### Chat");
+    println!();
+
+    // TranscriptHistory: never rewrites, but signals that transcript
+    // accumulation is active — stresses context limits over time.
+    let _history_strategy = TranscriptHistory;
+
+    for folder_state in folder_states {
+        println!("#### {}", folder_state.name);
+        println!();
+
+        let mut history = String::new();
+
+        for msg in messages {
+            eprintln!(
+                "  {} ← \"{}\"",
+                agent_label,
+                &msg[..msg.len().min(60)]
+            );
+
+            let start = std::time::Instant::now();
+
+            // Search with the raw message.
+            let embedded = embedder.embed(vec![msg.clone()]).await?;
+            let query_vec: Vec<f32> = embedded
+                .first()
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| anyhow!("Failed to get query embedding"))?;
+
+            let results = folder_state
+                .store
+                .search(&query_vec, msg, cli.top_k, cli.similarity_threshold)
+                .await?;
+            let chunks_found = results.len();
+
+            let context = results
+                .iter()
+                .enumerate()
+                .map(|(i, sc)| {
+                    format!(
+                        "[{}] (source: {}, score: {:.3})\n{}\n",
+                        i + 1,
+                        sc.chunk.source_file,
+                        sc.score,
+                        sc.chunk.text
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            // Build prompt with conversation history + context.
+            let full_prompt = if history.is_empty() {
+                format!(
+                    "{}\n\nQuestion: {}",
+                    prompts.format_chat_with_docs(&context),
+                    msg
+                )
+            } else {
+                format!(
+                    "{}\n\n{}\n\nQuestion: {}",
+                    history,
+                    prompts.format_chat_with_docs(&context),
+                    msg
+                )
+            };
+
+            let answer = match chat.generate(&full_prompt).await {
+                Ok(a) => a,
+                Err(e) => {
+                    println!("**Q:** {}", msg);
+                    println!();
+                    println!("_Error: {}_", e);
+                    println!();
+                    break;
+                }
+            };
+
+            let elapsed = start.elapsed();
+
+            println!("**Q:** {}", msg);
+            println!();
+            println!(
+                "_t={:.1} · k={} → {} · {} ctx · {:.1}s_",
+                cli.similarity_threshold,
+                cli.top_k,
+                chunks_found,
+                effective_ctx,
+                elapsed.as_secs_f64(),
+            );
+            println!();
+            println!("{}", answer.trim());
+            println!();
+
+            // Append to history for the next turn.
+            history.push_str(&format!("User: {}\nAssistant: {}\n", msg, answer));
+        }
+    }
+
+    Ok(())
 }
 
 // ── Single query execution (no history) ─────────────────────────────────────
