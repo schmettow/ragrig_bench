@@ -1,12 +1,13 @@
 {
   "chat": [
+    "What were we talking about?",
     "How can you put factorial variables in a linear equation?",
     "I have a sample of children evaluate a sample of school chairs using a 5 item Likert scale. What model should I use?",
-    "Rollercoaster? What's that about?"
+    "Rollercoaster? What's that about?",
+    "What were we talking about?"
   ],
-  "folders": ["@fixtures/html"],
+  "folders": ["@fixtures/pdf"],
   "agents": [
-    { "backend": "ollama", "model": "gemma4:e4b", "context_size": 2048 },
     { "backend": "ollama", "model": "gemma2:latest", "context_size": 8192 }
   ]
 }

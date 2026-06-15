@@ -3,7 +3,7 @@ use clap::Parser;
 use include_dir::Dir;
 use ragrig::{
     Args, ChatAgentSpec, EmbedderSpec, EmbeddingProvider, HashMetadata,
-    PdfParserBackend, Provider, SystemPrompts, TranscriptHistory,
+    PdfParserBackend, Provider, SystemPrompts, TranscriptMemory,
     embed_documents,
     get_changed_documents, get_document_file_hashes, get_embeddings_file_path,
     parsers::{DocumentParsers, build_parsers},
@@ -20,7 +20,7 @@ const FIXTURE_PREFIX: &str = "@fixtures/";
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
-/// Benchmark ragrig retrieval quality across multiple folders, questions,
+/// Benchmark ragrig retrieval quality across multiple folders, queries,
 /// and chat backends.  Results are written to stdout as Markdown.
 #[derive(Parser)]
 #[command(version, about)]
@@ -50,8 +50,8 @@ struct Cli {
 #[derive(Deserialize)]
 struct BenchmarkConfig {
     /// Independent queries — no history between them.
-    #[serde(default)]
-    questions: Vec<String>,
+    #[serde(default, alias = "questions")]
+    queries: Vec<String>,
     /// Sequential chat — each response feeds into the next prompt.
     #[serde(default)]
     chat: Vec<String>,
@@ -144,7 +144,7 @@ fn make_args(folder: &Path, cli: &Cli) -> Args {
         semantic_scholar_api_key: None,
         embedding_provider: EmbeddingProvider::Ollama,
         embedding_model: cli.embed_model.clone(),
-        history_model: String::new(),
+        memory_model: String::new(),
         prompt_chat: None,
         prompt_rewrite: None,
         sloppy_pdf: false,
@@ -169,11 +169,11 @@ async fn main() -> Result<()> {
     let raw = std::fs::read_to_string(&cli.config)?;
     let config: BenchmarkConfig = serde_json::from_str(&raw)?;
 
-    if config.questions.is_empty() && config.chat.is_empty() {
-        anyhow::bail!("Config must contain 'questions' or 'chat'.");
+    if config.queries.is_empty() && config.chat.is_empty() {
+        anyhow::bail!("Config must contain 'queries' or 'chat'.");
     }
-    if !config.questions.is_empty() && !config.chat.is_empty() {
-        anyhow::bail!("Config must not contain both 'questions' and 'chat' — pick one.");
+    if !config.queries.is_empty() && !config.chat.is_empty() {
+        anyhow::bail!("Config must not contain both 'queries' and 'chat' — pick one.");
     }
     if config.folders.is_empty() {
         anyhow::bail!("Config must contain at least one folder.");
@@ -267,15 +267,15 @@ async fn main() -> Result<()> {
             )
             .await?;
         } else {
-            for (qi, question) in config.questions.iter().enumerate() {
-                println!("### Q{}: {}", qi + 1, question);
+            for (qi, query) in config.queries.iter().enumerate() {
+                println!("### Q{}: {}", qi + 1, query);
                 println!();
 
                 for folder_state in &folder_states {
                     eprintln!(
                         "  {} ← \"{}\"",
                         agent_label,
-                        &question[..question.len().min(60)]
+                        &query[..query.len().min(60)]
                     );
 
                     let start = std::time::Instant::now();
@@ -287,7 +287,7 @@ async fn main() -> Result<()> {
                         effective_ctx,
                         &*folder_state.store,
                         &prompts,
-                        question,
+                        query,
                         &*chat,
                     )
                     .await;
@@ -343,9 +343,9 @@ async fn run_chat_mode(
     println!("### Chat");
     println!();
 
-    // TranscriptHistory: never rewrites, but signals that transcript
+    // TranscriptMemory: never rewrites, but signals that transcript
     // accumulation is active — stresses context limits over time.
-    let _history_strategy = TranscriptHistory;
+    let _history_strategy = TranscriptMemory;
 
     for folder_state in folder_states {
         println!("#### {}", folder_state.name);
@@ -393,13 +393,13 @@ async fn run_chat_mode(
             // Build prompt with conversation history + context.
             let full_prompt = if history.is_empty() {
                 format!(
-                    "{}\n\nQuestion: {}",
+                    "{}\n\nQuery: {}",
                     prompts.format_chat_with_docs(&context),
                     msg
                 )
             } else {
                 format!(
-                    "{}\n\n{}\n\nQuestion: {}",
+                    "{}\n\n{}\n\nQuery: {}",
                     history,
                     prompts.format_chat_with_docs(&context),
                     msg
@@ -455,16 +455,16 @@ async fn run_query(
     _context_size: usize,
     store: &dyn ragrig::store::VectorStore,
     prompts: &SystemPrompts,
-    question: &str,
+    query: &str,
     chat: &dyn ragrig::agents::Generator,
 ) -> Result<QueryResult> {
-    let embedded = embedder.embed(vec![question.to_string()]).await?;
+    let embedded = embedder.embed(vec![query.to_string()]).await?;
     let query_vec: Vec<f32> = embedded
         .first()
         .map(|(_, v)| v.clone())
         .ok_or_else(|| anyhow!("Failed to get query embedding"))?;
 
-    let results = store.search(&query_vec, question, top_k, threshold).await?;
+    let results = store.search(&query_vec, query, top_k, threshold).await?;
     let chunks_found = results.len();
     if chunks_found == 0 {
         return Ok(QueryResult {
@@ -489,9 +489,9 @@ async fn run_query(
         .join("\n");
 
     let full_prompt = format!(
-        "{}\n\nQuestion: {}",
+        "{}\n\nQuery: {}",
         prompts.format_chat_with_docs(&context),
-        question
+        query
     );
 
     let answer = chat.generate(&full_prompt).await?;

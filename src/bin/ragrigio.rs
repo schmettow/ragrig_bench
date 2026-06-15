@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         semantic_scholar_api_key: None,
         embedding_provider: EmbeddingProvider::Ollama,
         embedding_model: EMBED_MODEL.into(),
-        history_model: String::new(),
+        memory_model: String::new(),
         prompt_chat: None,
         prompt_rewrite: None,
         sloppy_pdf: false,
@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
         .join("\n");
 
     let full_prompt = format!(
-        "{}\n\nQuestion: {}",
+        "{}\n\nQuery: {}",
         prompts.format_chat_with_docs(&context),
         query
     );
