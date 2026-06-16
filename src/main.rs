@@ -1,14 +1,13 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use ragrig::{
-    ChatAgentSpec, ChunkConfig, EmbedderSpec, HashMetadata,
+    ChatAgentSpec, ChunkConfig, EmbedderSpec,
     SystemPrompts, TranscriptMemory,
     embed_documents,
-    get_changed_documents, get_document_file_hashes, get_embeddings_file_path,
+    documents::{get_changed_documents, get_document_file_hashes, update_file_hashes, HashMetadata},
     parsers::{DocumentParsers, build_parsers},
-    remove_deleted_embeddings,
     store::open_store,
-    update_file_hashes,
+    vector::{get_embeddings_file_path, remove_deleted_embeddings},
 };
 use serde::Deserialize;
 use std::path::PathBuf;
