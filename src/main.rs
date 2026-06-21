@@ -2,13 +2,14 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use ragrig::{
     ChatAgentSpec, ChunkConfig, EmbedderSpec,
-    SystemPrompts, TranscriptMemory,
     embed_documents,
     documents::{get_changed_documents, get_document_file_hashes, update_file_hashes, HashMetadata},
     parsers::{DocumentParsers, build_parsers},
     store::open_store,
     vector::{get_embeddings_file_path, remove_deleted_embeddings},
 };
+
+const CHAT_PROMPT: &str = "You are a helpful document assistant. Answer the user's question explicitly using the provided Context snippets.\n\nContext:\n{context}\n";
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -31,11 +32,11 @@ struct Cli {
     embed_model: String,
 
     /// Number of chunks to retrieve per query (top-k).
-    #[arg(short = 'k', long, default_value = "80")]
+    #[arg(short = 'k', long, default_value = "20")]
     top_k: usize,
 
     /// Minimum hybrid RRF score for a chunk to be included.
-    #[arg(short = 't', long, default_value = "0.1")]
+    #[arg(short = 't', long, default_value = "0.3")]
     similarity_threshold: f64,
 }
 
@@ -108,7 +109,6 @@ async fn main() -> Result<()> {
     }
     .build()?;
     let parsers = DocumentParsers::new(build_parsers());
-    let prompts = SystemPrompts::default();
 
     // Resolve folders — fixtures get extracted to temp dirs.
     let mut folder_states: Vec<FolderState> = Vec::new();
@@ -182,7 +182,6 @@ async fn main() -> Result<()> {
                 &cli,
                 effective_ctx,
                 &folder_states,
-                &prompts,
                 &config.chat,
                 &*chat,
                 &agent_label,
@@ -208,7 +207,6 @@ async fn main() -> Result<()> {
                         cli.similarity_threshold,
                         effective_ctx,
                         &*folder_state.store,
-                        &prompts,
                         query,
                         &*chat,
                     )
@@ -257,17 +255,12 @@ async fn run_chat_mode(
     cli: &Cli,
     effective_ctx: usize,
     folder_states: &[FolderState],
-    prompts: &SystemPrompts,
     messages: &[String],
     chat: &dyn ragrig::agents::Generator,
     agent_label: &str,
 ) -> Result<()> {
     println!("### Chat");
     println!();
-
-    // TranscriptMemory: never rewrites, but signals that transcript
-    // accumulation is active — stresses context limits over time.
-    let _history_strategy = TranscriptMemory;
 
     for folder_state in folder_states {
         println!("#### {}", folder_state.name);
@@ -316,14 +309,14 @@ async fn run_chat_mode(
             let full_prompt = if history.is_empty() {
                 format!(
                     "{}\n\nQuery: {}",
-                    prompts.format_chat_with_docs(&context),
+                    CHAT_PROMPT.replace("{context}", &context),
                     msg
                 )
             } else {
                 format!(
                     "{}\n\n{}\n\nQuery: {}",
                     history,
-                    prompts.format_chat_with_docs(&context),
+                    CHAT_PROMPT.replace("{context}", &context),
                     msg
                 )
             };
@@ -376,7 +369,6 @@ async fn run_query(
     threshold: f64,
     _context_size: usize,
     store: &dyn ragrig::store::VectorStore,
-    prompts: &SystemPrompts,
     query: &str,
     chat: &dyn ragrig::agents::Generator,
 ) -> Result<QueryResult> {
@@ -412,7 +404,7 @@ async fn run_query(
 
     let full_prompt = format!(
         "{}\n\nQuery: {}",
-        prompts.format_chat_with_docs(&context),
+        CHAT_PROMPT.replace("{context}", &context),
         query
     );
 
