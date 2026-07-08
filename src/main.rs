@@ -2,8 +2,10 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use ragrig::{
     ChatAgentSpec, ChunkConfig, EmbedderSpec,
+    documents::{
+        HashMetadata, get_changed_documents, get_document_file_hashes, update_file_hashes,
+    },
     embed_documents,
-    documents::{get_changed_documents, get_document_file_hashes, update_file_hashes, HashMetadata},
     parsers::{DocumentParsers, build_parsers},
     store::open_store,
     vector::{get_embeddings_file_path, remove_deleted_embeddings},
@@ -77,7 +79,10 @@ struct FolderState {
 // ── Chunking config (shared across all folders) ──────────────────────────────
 
 fn chunk_config() -> ChunkConfig {
-    ChunkConfig { size: 1024, overlap: 128 }
+    ChunkConfig {
+        size: 1024,
+        overlap: 128,
+    }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -193,11 +198,7 @@ async fn main() -> Result<()> {
                 println!();
 
                 for folder_state in &folder_states {
-                    eprintln!(
-                        "  {} ← \"{}\"",
-                        agent_label,
-                        &query[..query.len().min(60)]
-                    );
+                    eprintln!("  {} ← \"{}\"", agent_label, &query[..query.len().min(60)]);
 
                     let start = std::time::Instant::now();
 
@@ -245,7 +246,7 @@ async fn main() -> Result<()> {
 // ── Agent builder ───────────────────────────────────────────────────────────
 
 fn build_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> {
-    ChatAgentSpec::parse(&cfg.backend, Some(&cfg.model), cfg.api_key.as_deref())?.build()
+    ChatAgentSpec::parse(&cfg.backend, Some(&cfg.model), cfg.api_key.as_deref(), None)?.build()
 }
 
 // ── Chat mode (sequential conversation with history) ────────────────────────
@@ -269,11 +270,7 @@ async fn run_chat_mode(
         let mut history = String::new();
 
         for msg in messages {
-            eprintln!(
-                "  {} ← \"{}\"",
-                agent_label,
-                &msg[..msg.len().min(60)]
-            );
+            eprintln!("  {} ← \"{}\"", agent_label, &msg[..msg.len().min(60)]);
 
             let start = std::time::Instant::now();
 
@@ -297,8 +294,8 @@ async fn run_chat_mode(
                     format!(
                         "[{}] (source: {}, score: {:.3})\n{}\n",
                         i + 1,
-                        sc.chunk.source_file,
-                        sc.score,
+                        sc.chunk.source_file.0,
+                        sc.score.0,
                         sc.chunk.text
                     )
                 })
@@ -394,8 +391,8 @@ async fn run_query(
             format!(
                 "[{}] (source: {}, score: {:.3})\n{}\n",
                 i + 1,
-                sc.chunk.source_file,
-                sc.score,
+                sc.chunk.source_file.0,
+                sc.score.0,
                 sc.chunk.text
             )
         })
