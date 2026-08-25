@@ -345,6 +345,8 @@ Arguments:
 Options:
   -w, --workspace <DIR>  Workspace directory for the vector store
                          [default: .ragrig_bench]
+  -o, --out <FILE>       Write the ingestion log to this file instead
+                         of stderr
   -h, --help             Print help
   -V, --version          Print version
 ```

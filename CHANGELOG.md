@@ -71,9 +71,10 @@ All notable changes to `ragrig_bench` will be documented in this file.
   two strictly sequential processes sharing the TOML config and the workspace
   — `ragrig-bench-ingest` walks every requested provenance (pipeline ×
   corpus) and builds the combined vector database, `ragrig-bench-interact`
-  runs the benchmark matrix against it.  Provenance is the only seam: a
-  requested provenance missing from the database produces a helpful error
-  pointing back at the ingest step (`count_matching` gate, plus a
+  runs the benchmark matrix against it.  Both binaries take `--out` (ingest:
+  the ingestion log; interact: the Markdown report).  Provenance is the only
+  seam: a requested provenance missing from the database produces a helpful
+  error pointing back at the ingest step (`count_matching` gate, plus a
   "no vector database" error when the workspace store is absent).
 
 ### Removed

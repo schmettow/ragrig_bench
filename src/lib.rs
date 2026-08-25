@@ -250,8 +250,11 @@ impl ResolvedCorpus {
 
 /// Resolve the `name=path` corpus specs.  `@fixtures/<fmt>` extracts the
 /// library's fixture set into a temp dir; `@mock/<n>` synthesises `n`
-/// deterministic in-memory documents.
-pub fn resolve_corpora(specs: &[String]) -> Result<Vec<ResolvedCorpus>> {
+/// deterministic in-memory documents.  Resolution notes go to `log`.
+pub fn resolve_corpora(
+    specs: &[String],
+    log: &mut dyn std::io::Write,
+) -> Result<Vec<ResolvedCorpus>> {
     specs
         .iter()
         .map(|spec| {
@@ -260,13 +263,13 @@ pub fn resolve_corpora(specs: &[String]) -> Result<Vec<ResolvedCorpus>> {
                 .ok_or_else(|| anyhow!("corpus '{spec}' must have the form 'name=path'"))?;
             let (source, temp) = if let Some(format) = raw.strip_prefix("@fixtures/") {
                 let (p, dir) = ragrig::fixtures::extract_fixtures(format)?;
-                eprintln!("  Extracted {format} fixtures → {}", p.display());
+                writeln!(log, "  Extracted {format} fixtures → {}", p.display())?;
                 (CorpusSource::Folder(p), Some(dir))
             } else if let Some(count) = raw.strip_prefix("@mock/") {
                 let count: usize = count
                     .parse()
                     .with_context(|| format!("mock corpus size '{count}' in corpus '{spec}'"))?;
-                eprintln!("  Mock corpus '{name}': {count} synthetic documents.");
+                writeln!(log, "  Mock corpus '{name}': {count} synthetic documents.")?;
                 (CorpusSource::Mock(count), None)
             } else {
                 (CorpusSource::Folder(PathBuf::from(raw)), None)
