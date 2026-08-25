@@ -59,6 +59,14 @@ All notable changes to `ragrig_bench` will be documented in this file.
   is queried separately at runtime via pipeline provenance.  Each
   (corpus, pipeline) pair is stored under a pipeline-scoped corpus name, so a
   corpus-only filter selects exactly one pipeline's chunks.
+- **Mock components (offline mode)**: `[mock] embedder = true` swaps in a
+  deterministic bag-of-words embedder (word-overlap cosine retrieval); an
+  agent with `answer = "…"` (a `{query}` template) uses a canned mock
+  generator built on `SimpleGenerator` + `MutexGenerator`; `@mock/<n>` corpus
+  specs synthesise `n` in-memory Markdown documents.  `mock.toml` runs the
+  full matrix with zero network, zero disk, in milliseconds.
+- **`--out/-o <FILE>`**: the Markdown report can be written to a file instead
+  of stdout; progress messages stay on stderr.
 
 ### Removed
 

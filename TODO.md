@@ -1,23 +1,9 @@
 # TODO
 
 Remaining work for `ragrig_bench` (ragrig 1.0.0).  The `RagAgent` migration,
-TOML configuration, corpus-based storage, and pipeline sweeps are done.
-
-## Mock components — do first
-
-- **Static-response mocks** — the benchmark matrix (agents × pipelines ×
-  corpora × queries) costs a real Ollama round-trip per cell; a mock mode
-  makes combinatorial testing fast and CI-able.  ragrig's traits make this
-  trivial:
-  - **mock `Generator`** — `ragrig::SimpleGenerator` (sync
-    `respond(prompt) -> String`) wrapped in `MutexGenerator`, or a full
-    `Generator` impl with canned answers per agent;
-  - **mock `Embedder`** — deterministic toy vectors (e.g. hash-based), so
-    retrieval + `RagAgent` paths run offline (see `examples/meta_citation`);
-  - **mock `Corpus`** — static in-memory `Document`s, so indexing paths are
-    testable without fixtures/tempdirs.
-  - For generation-only runs, `EmbedderSpec::None` / `NoopEmbedder` already
-    exist as the built-in "retrieval off" seam.
+TOML configuration, corpus-based storage, pipeline sweeps, and the mock
+components are done — `mock.toml` runs the full matrix offline in
+milliseconds.
 
 ## Benchmark dimensions
 

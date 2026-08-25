@@ -185,6 +185,26 @@ parser = "unpdf"
 chunker = "chunkedrs-markdown"
 ```
 
+### Mock mode — fast, offline combinatorics
+
+For testing the matrix itself (headers, ordering, output structure) without a
+running Ollama, the mock components replace every slow backend with a
+deterministic one:
+
+- `[mock] embedder = true` — a deterministic bag-of-words embedder;
+  retrieval becomes word-overlap cosine and runs offline.
+- an agent with `answer = "..."` — a canned mock generator; `{query}` is
+  replaced by the user query, so each cell is distinguishable.
+- a `corpus_dirs` entry `name=@mock/<n>` — `n` synthetic in-memory Markdown
+  documents cycling through fixed topics.
+
+See `mock.toml` — the whole (agents × pipelines × queries) matrix runs in
+milliseconds with no network and no files on disk:
+
+```bash
+ragrig_bench -w /tmp/mock_ws mock.toml
+```
+
 ### Built-in test fixtures
 
 To evaluate models without your own documents, use the `@fixtures/` prefix.
@@ -308,6 +328,8 @@ Arguments:
 Options:
   -w, --workspace <DIR>  Workspace directory for the vector store
                          [default: .ragrig_bench]
+  -o, --out <FILE>       Write the Markdown report to this file
+                         instead of stdout
   -h, --help             Print help
   -V, --version          Print version
 ```

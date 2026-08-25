@@ -1,0 +1,37 @@
+# Three-turn chat through the default ragrig pipeline — the full parser
+# registry + MarkdownChunker + default embed settings (omitted sections fall
+# back to the library defaults), varying the chat context budget per agent:
+# 1024, 2048, 4096, 8192 tokens.
+#
+# `provider` and `model` are also omitted, so every agent uses ragrig's
+# default chat backend (Ollama, qwen3.5:9b).  Swap in a smaller model for a
+# faster sweep, e.g. add `provider = "Ollama"` / `model = "gemma2:latest"`
+# to each [agents.chat].
+
+corpus_dirs = ["book=@fixtures/html"]
+
+chat = [
+  "What is this book about?",
+  "What does it say about Bayesian statistics?",
+  "What were we talking about?",
+]
+
+[[agents]]
+label = "ctx-1024"
+[agents.chat]
+context_tokens = 1024
+
+[[agents]]
+label = "ctx-2048"
+[agents.chat]
+context_tokens = 2048
+
+[[agents]]
+label = "ctx-4096"
+[agents.chat]
+context_tokens = 4096
+
+[[agents]]
+label = "ctx-8192"
+[agents.chat]
+context_tokens = 8192

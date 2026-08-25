@@ -1,0 +1,44 @@
+# Fully offline benchmark — mock components only.
+# No Ollama, no documents on disk: the entire matrix runs in milliseconds.
+#   - [mock] embedder        → deterministic bag-of-words vectors (word-overlap
+#                              cosine retrieval, no network)
+#   - agents with `answer`   → canned mock generation (template, `{query}`
+#                              placeholder), no chat backend
+#   - corpus_dirs @mock/<n>  → n synthetic in-memory Markdown documents
+#                              cycling through fixed topics
+
+corpus_dirs = ["synth=@mock/12"]
+
+queries = [
+  "How does quantum entanglement work?",
+  "What does Bayes' theorem say about priors?",
+  "How is linear regression fitted?",
+]
+
+[[agents]]
+label = "mock-a"
+answer = "[mock-a] Deterministic answer for: {query}"
+
+[[agents]]
+label = "mock-b"
+answer = "[mock-b] Simulated response — query was: {query}"
+
+# Two chunking pipelines indexed side by side into one store.
+[[pipelines]]
+parser = "unpdf"
+chunker = "markdown"
+
+[[pipelines]]
+chunker = "chunkedrs-markdown"
+
+[embed]
+top_k = 5
+# 0.0 accepts every chunk — word-overlap scores are low by construction.
+similarity_threshold = 0.0
+
+[parse]
+chunk_size = 256
+chunk_overlap = 32
+
+[mock]
+embedder = true
