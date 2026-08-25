@@ -12,8 +12,8 @@ corpus_dirs = ["book=@fixtures/html"]
 
 chat = [
   "What is this book about?",
-  "What does it say about Bayesian statistics?",
-  "What were we talking about?",
+  "Why does it promote Bayesian Statistics?",
+  "How does this connect to Generalized Linear Models?",
 ]
 
 [[agents]]

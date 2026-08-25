@@ -32,6 +32,13 @@ runs the full matrix offline in milliseconds.
 
 ## Config
 
+- **Grid specification via vectors** — the serialised TOML configs get
+  repetitive: a context sweep means one `[[agents]]` block per value (see
+  `chat_ctx_agents.toml`).  Explore a compact way to specify the complete
+  benchmark grid as vectors of values — e.g. `context_tokens = [1024, 2048,
+  4096, 8192]` expanding into the cartesian product — through the
+  `[[agents.chat]]` array-of-tables form, JSON, or command-line overrides.
+  To be explored.
 - **Memory strategy instead of `queries`/`chat` modes** — remove the
   external variation between coherent chat and one-shot questions: one
   question list plus a memory-strategy setting drives whether turns
