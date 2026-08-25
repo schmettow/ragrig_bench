@@ -53,10 +53,12 @@ chunk_size = 1024
 chunk_overlap = 128
 ```
 
-Then run:
+Then run the two processes in sequence — ingestion builds the vector
+database, interaction runs the benchmark against it:
 
 ```bash
-ragrig_bench bench.toml > results.md
+ragrig-bench-ingest bench.toml
+ragrig-bench-interact bench.toml > results.md
 ```
 
 ## Installation
@@ -82,21 +84,23 @@ ollama pull qwen2.5:1.5b
 cargo build --release
 
 # Quick test without installing:
-cargo run --release -- -w /tmp/bench_ws -o /tmp/report.md mock.toml
+cargo run --release --bin ragrig-bench-ingest -- -w /tmp/bench_ws mock.toml
+cargo run --release --bin ragrig-bench-interact -- -w /tmp/bench_ws -o /tmp/report.md mock.toml
 
 # 6. Install to ~/bin
 mkdir -p ~/bin
-cp target/release/ragrig-bench ~/bin/
+cp target/release/ragrig-bench-ingest target/release/ragrig-bench-interact ~/bin/
 
 # 7. Verify
-~/bin/ragrig-bench --help
+~/bin/ragrig-bench-ingest --help
+~/bin/ragrig-bench-interact --help
 ```
 
-The binary lands in `~/bin`.  No C++ toolchain, no `cmake`, no `protoc`
+The binaries land in `~/bin`.  No C++ toolchain, no `cmake`, no `protoc`
 — pure Rust.
 
-If `ragrig-bench --help` says "command not found", `~/bin` isn't on your
-`PATH`.  Here's how to fix it.
+If `ragrig-bench-ingest --help` says "command not found", `~/bin` isn't on
+your `PATH`.  Here's how to fix it.
 
 **Check whether it's already set:**
 
@@ -136,11 +140,16 @@ on Linux/macOS to apply immediately.
 
 ## What happens under the hood:
 
-1. Every pipeline indexes every corpus into **one shared store** in the
-   workspace (`--workspace`, default `.ragrig_bench/`).  Each
+1. **Ingestion** (`ragrig-bench-ingest`) walks every requested provenance
+   (pipeline × corpus) and builds the combined vector database — one shared
+   store in the workspace (`--workspace`, default `.ragrig_bench/`).  Each
    (corpus, pipeline) pair gets its own provenance corpus name, so a
    `PipelineFilter::for_corpus` selects exactly one pipeline at query time.
-2. Indexing is incremental — re-runs skip unchanged documents.
+   Indexing is incremental — re-runs skip unchanged documents.
+2. **Interaction** (`ragrig-bench-interact`) runs the benchmark matrix
+   against that database.  Provenance is the only seam between the two
+   processes: a requested provenance missing from the database produces a
+   helpful error pointing back at the ingest step.
 3. The outer loop cycles through agents so each model is loaded once and stays
    warm for all pipelines, corpora, and questions — no thrashing.
 4. For every (agent, pipeline, corpus, question) combination the program
@@ -204,7 +213,8 @@ See `mock.toml` — the whole (agents × pipelines × queries) matrix runs in
 milliseconds with no network and no files on disk:
 
 ```bash
-ragrig_bench -w /tmp/mock_ws mock.toml
+ragrig-bench-ingest -w /tmp/mock_ws mock.toml
+ragrig-bench-interact -w /tmp/mock_ws mock.toml
 ```
 
 ### Built-in test fixtures
@@ -226,10 +236,12 @@ model = "gemma2:latest"
 ### Quick start (offline)
 
 `mock.toml` runs a fully offline matrix — mock generator, mock embedder,
-synthetic corpus — no Ollama, no documents on disk:
+synthetic corpus — no Ollama, no documents on disk.  Ingest first, then
+interact:
 
 ```bash
-ragrig-bench -w /tmp/bench_ws -o report.md mock.toml
+ragrig-bench-ingest -w /tmp/bench_ws mock.toml
+ragrig-bench-interact -w /tmp/bench_ws -o report.md mock.toml
 ```
 
 ## Examples
@@ -321,8 +333,11 @@ applied to cosine scores *before* RRF fusion, not to the fused RRF scores.
 
 ## CLI Reference
 
+Two binaries share the TOML config and the workspace.  Ingest first, then
+interact.
+
 ```
-Usage: ragrig_bench [OPTIONS] <CONFIG>
+Usage: ragrig-bench-ingest [OPTIONS] <CONFIG>
 
 Arguments:
   <CONFIG>  Path to the TOML benchmark configuration file
@@ -330,6 +345,19 @@ Arguments:
 Options:
   -w, --workspace <DIR>  Workspace directory for the vector store
                          [default: .ragrig_bench]
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+```
+Usage: ragrig-bench-interact [OPTIONS] <CONFIG>
+
+Arguments:
+  <CONFIG>  Path to the TOML benchmark configuration file
+
+Options:
+  -w, --workspace <DIR>  Workspace directory holding the vector store
+                         built by ragrig-bench-ingest [default: .ragrig_bench]
   -o, --out <FILE>       Write the Markdown report to this file
                          instead of stdout
   -h, --help             Print help
@@ -337,7 +365,7 @@ Options:
 ```
 
 All benchmark parameters (models, top-k, thresholds, chunking, pipelines)
-live in the TOML config; the CLI only picks the file and the workspace.
+live in the TOML config; the CLIs only pick the file and the workspace.
 
 ## Requirements
 

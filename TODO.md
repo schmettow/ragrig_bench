@@ -1,9 +1,10 @@
 # TODO
 
 Remaining work for `ragrig_bench` (ragrig 1.0.0).  The `RagAgent` migration,
-TOML configuration, corpus-based storage, pipeline sweeps, and the mock
-components are done — `mock.toml` runs the full matrix offline in
-milliseconds.
+TOML configuration, corpus-based storage, pipeline sweeps, the mock
+components, and the ingestion/interaction split (`ragrig-bench-ingest` →
+`ragrig-bench-interact`, provenance as the only seam) are done — `mock.toml`
+runs the full matrix offline in milliseconds.
 
 ## Benchmark dimensions
 
@@ -17,15 +18,6 @@ milliseconds.
   embedder-metadata guard (one embedder per store); needs per-embedder
   stores.  Decide whether the config gains multiple stores or the embedder
   stays global.
-
-## Workflow
-
-- **Ingestion phase vs. chat phase** — split the run into two strictly
-  sequential processes: the ingestion process walks all requested
-  provenances (parser × chunker × corpus, and ranker once it is a variable)
-  and builds the combined vector database; only then does the chat process
-  run its queries against it.  No chat work may start before every
-  provenance is indexed.
 
 ## Observability & robustness
 

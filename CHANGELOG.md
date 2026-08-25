@@ -67,6 +67,14 @@ All notable changes to `ragrig_bench` will be documented in this file.
   full matrix with zero network, zero disk, in milliseconds.
 - **`--out/-o <FILE>`**: the Markdown report can be written to a file instead
   of stdout; progress messages stay on stderr.
+- **Ingestion and interaction split into two binaries**: the workflow is now
+  two strictly sequential processes sharing the TOML config and the workspace
+  — `ragrig-bench-ingest` walks every requested provenance (pipeline ×
+  corpus) and builds the combined vector database, `ragrig-bench-interact`
+  runs the benchmark matrix against it.  Provenance is the only seam: a
+  requested provenance missing from the database produces a helpful error
+  pointing back at the ingest step (`count_matching` gate, plus a
+  "no vector database" error when the workspace store is absent).
 
 ### Removed
 
