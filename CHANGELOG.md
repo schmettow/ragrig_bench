@@ -2,6 +2,46 @@
 
 All notable changes to `ragrig_bench` will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **ragrig 1.0.0 API alignment**: Replaced the removed `embed_documents`
+  entry point and the hand-rolled `.ragrig_embeddings.json` hash bookkeeping
+  with `sync_corpus` over a `FolderCorpus::named` — new/changed documents are
+  indexed, removed ones deleted, unchanged ones skipped via the store's
+  manifest.
+- **`RagAgent::builder().build()`** now returns `Result<RagAgent>` — both
+  binaries propagate with `?`.
+- **`RagResponse`**: renamed `sources` → `documents` (the field no longer
+  carries scored chunks).
+- **Spec enums**: `EmbedderSpec::Ollama` and `ChatAgentSpec::Ollama` gained
+  `request_timeout_secs` — switched to the `EmbedderSpec::ollama()` /
+  `ChatAgentSpec::ollama()` convenience constructors.
+
+### Fixed
+
+- **Threshold semantics**: `--similarity-threshold` documented a "hybrid RRF
+  score" on the 0.0–0.033 RRF scale, while the library applies it to cosine
+  similarity (0.0–1.0) *before* RRF fusion — the old default of 0.3 filtered
+  out every chunk.  Default is now 0.04 (matching the library) with corrected
+  help text; the `t=` line prints the raw value instead of rounding to one
+  decimal.
+- **Retrieval metrics**: `RagResponse` only reports a chunk *count*.  Both
+  modes now run `search_similar` with the same embedder/top-k/threshold and
+  print the ranker-scored chunk list (document, score, snippet) per query.
+- **`top_k` default** aligned with the library default (50).
+- **Context injection restored**: the agent was built with an empty system
+  prompt, and the ragrig builder only substitutes `{context}` into prompts
+  that contain the placeholder — so retrieved chunks were silently dropped
+  and the benchmark compared bare-LLM answers.  The library's default
+  document-assistant prompt is now used.
+- **Fixture state wiped before indexing**: the embedded HTML fixture folder
+  ships stale ragrig state (`.ragrig_store`, `.ragrig_embeddings.json`,
+  `.ragrig/`), which tripped ragrig 1.0's embedder-metadata guard on
+  `@fixtures/html`.  Fixture folders are extracted fresh per run, so any
+  ragrig state inside them is removed before syncing.
+
 ## [0.2.0] — 2026-06-16
 
 ### Changed

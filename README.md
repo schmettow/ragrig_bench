@@ -231,11 +231,13 @@ need to answer detailed technical questions.  You have a workstation with
 With a large document set, also experiment with the search parameters:
 
 ```bash
-ragrig_bench -k 20 -t 0.3 bench.json > results.md
+ragrig_bench -k 20 -t 0.1 bench.json > results.md
 ```
 
-`-k 20` retrieves twice as many chunks per query (more context).  `-t 0.3`
-lowers the similarity threshold so borderline-relevant chunks are included.
+`-k 20` caps retrieval at 20 chunks per query (the default is 50).  `-t 0.1`
+raises the cosine similarity threshold (default `0.04`) so only closely
+matching chunks are retrieved — the threshold is applied to cosine scores
+*before* RRF fusion, not to the fused RRF scores.
 
 ## CLI Reference
 
@@ -248,8 +250,9 @@ Arguments:
 Options:
   -c, --context-size <N>       Default context window (tokens) [default: 4096]
   -e, --embed-model <MODEL>    Embedding model [default: nomic-embed-text]
-  -k, --top-k <N>              Chunks retrieved per query [default: 25]
-  -t, --similarity-threshold <F>  Minimum hybrid RRF score [default: 0.3]
+  -k, --top-k <N>              Chunks retrieved per query [default: 50]
+  -t, --similarity-threshold <F>  Minimum cosine similarity (0.0–1.0), applied
+                                  before RRF fusion [default: 0.04]
   -h, --help                   Print help
   -V, --version                Print version
 ```

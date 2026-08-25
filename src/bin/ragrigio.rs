@@ -1,12 +1,10 @@
 use anyhow::Result;
 use ragrig::{
-    ChatAgentSpec, ChunkConfig, EmbedderSpec,
-    SystemPrompts,
-    embed_documents,
-    documents::{get_changed_documents, get_document_file_hashes, update_file_hashes, HashMetadata},
+    ChatAgentSpec, ChunkConfig, EmbedderSpec, FolderCorpus, GenerationParams, MarkdownChunker,
+    RagAgent,
     parsers::{DocumentParsers, build_parsers},
     store::open_store,
-    vector::{get_embeddings_file_path, remove_deleted_embeddings},
+    vector::sync_corpus,
 };
 use std::io::BufRead;
 
@@ -17,46 +15,32 @@ const EMBED_MODEL: &str = "nomic-embed-text";
 async fn main() -> Result<()> {
     let cwd = std::env::current_dir()?;
 
-    let top_k: usize = 25;
-    let similarity_threshold: f64 = 0.3;
+    let config = ChunkConfig {
+        size: 1024,
+        overlap: 128,
+    };
 
-    let config = ChunkConfig { size: 1024, overlap: 128 };
-
-    let embedder = EmbedderSpec::Ollama {
-        model: EMBED_MODEL.into(),
-    }
-    .build()?;
-    let chat = ChatAgentSpec::Ollama {
-        model: CHAT_MODEL.into(),
-    }
-    .build()?;
+    let embedder = EmbedderSpec::ollama(EMBED_MODEL).build()?;
     let parsers = DocumentParsers::new(build_parsers());
-    let prompts = SystemPrompts::default();
 
     // ---- Incremental indexing ----
     let store = open_store(&cwd).await?;
-    let hashes_path = get_embeddings_file_path(&cwd);
-
-    let current_hashes = get_document_file_hashes(&cwd)?;
-    let stored_meta: Option<HashMetadata> = if hashes_path.exists() {
-        let raw = std::fs::read_to_string(&hashes_path)?;
-        Some(serde_json::from_str(&raw)?)
-    } else {
-        None
-    };
-    let stored_entries = stored_meta
-        .as_ref()
-        .map(|m| m.file_hashes.as_slice())
-        .unwrap_or(&[]);
-
-    let changed = get_changed_documents(&current_hashes, stored_entries);
-    if !changed.is_empty() {
-        eprintln!("Indexing {} changed document(s) …", changed.len());
-        embed_documents(&*embedder, &parsers, &config, changed, &*store).await?;
-    }
-    remove_deleted_embeddings(&*store, &current_hashes).await?;
-    update_file_hashes(&current_hashes, &hashes_path)?;
-    eprintln!("Store: {} chunks ready.", store.len());
+    let corpus = FolderCorpus::named("cwd", cwd.clone());
+    let stats = sync_corpus(
+        &corpus,
+        &parsers,
+        &MarkdownChunker,
+        &*embedder,
+        &config,
+        &*store,
+    )
+    .await?;
+    let indexed: usize = stats.iter().map(|s| s.chunks).sum();
+    eprintln!(
+        "Store: {} chunks ready ({} in this run).",
+        store.len(),
+        indexed
+    );
 
     // ---- Read query from stdin ----
     let mut query = String::new();
@@ -66,49 +50,29 @@ async fn main() -> Result<()> {
         anyhow::bail!("Empty query.");
     }
 
-    // ---- Search ----
-    let embedded = embedder.embed(vec![query.to_string()]).await?;
-    let query_vec: Vec<f32> = embedded
-        .first()
-        .map(|(_, v)| v.clone())
-        .ok_or_else(|| anyhow::anyhow!("Failed to get query embedding"))?;
+    // ---- Build agent and generate ----
+    let chat = ChatAgentSpec::ollama(CHAT_MODEL, GenerationParams::default(), None).build()?;
 
-    let results = store
-        .search(&query_vec, query, top_k, similarity_threshold)
+    let agent = RagAgent::builder()
+        .chat(chat)
+        .embed(EmbedderSpec::ollama(EMBED_MODEL).build()?)
+        .store(store)
+        .top_k(25)
+        .similarity_threshold(0.04)
+        .build()?;
+
+    let response = agent
+        .generate_with_context_detailed(query, &[] as &[(&str, &str)])
         .await?;
-    if results.is_empty() {
-        println!("No relevant documents found.");
-        return Ok(());
+
+    println!("{}", response.answer.trim());
+    if let Some(chunks) = response.chunks_retrieved {
+        eprintln!(
+            "  [{} chunks, {:.1}s]",
+            chunks,
+            response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0)
+        );
     }
-
-    // ---- Generate ----
-    let context = results
-        .iter()
-        .enumerate()
-        .map(|(i, sc)| {
-            format!(
-                "[{}] (source: {}, score: {:.3})\n{}\n",
-                i + 1,
-                sc.chunk.source_file,
-                sc.score,
-                sc.chunk.text
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let full_prompt = format!(
-        "{}\n\nQuery: {}",
-        prompts.format_chat_with_docs(&context),
-        query
-    );
-
-    chat.generate_stream(&full_prompt, &|token| {
-        print!("{}", token);
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-    })
-    .await?;
-    println!();
 
     Ok(())
 }

@@ -1,10 +1,10 @@
 [package]
-name = "ragrig_bench"
+name = "ragrig-bench"
 version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-# ragrig = { version = "0.9", features = ["test-fixtures"] }
+# ragrig = { version = "1.0", features = ["test-fixtures"] }
 ragrig = { path = "../ragrig", features = ["test-fixtures"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"

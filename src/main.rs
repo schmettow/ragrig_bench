@@ -1,15 +1,12 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use ragrig::{
-    ChatAgentSpec, ChunkConfig, EmbedderSpec,
-    embed_documents,
-    documents::{get_changed_documents, get_document_file_hashes, update_file_hashes, HashMetadata},
+    ChatAgentSpec, ChunkConfig, Embedder, EmbedderSpec, FolderCorpus, MarkdownChunker, RagAgent,
+    RagResponse, VectorStore,
     parsers::{DocumentParsers, build_parsers},
     store::open_store,
-    vector::{get_embeddings_file_path, remove_deleted_embeddings},
+    vector::{search_similar, sync_corpus},
 };
-
-const CHAT_PROMPT: &str = "You are a helpful document assistant. Answer the user's question explicitly using the provided Context snippets.\n\nContext:\n{context}\n";
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -32,11 +29,12 @@ struct Cli {
     embed_model: String,
 
     /// Number of chunks to retrieve per query (top-k).
-    #[arg(short = 'k', long, default_value = "20")]
+    #[arg(short = 'k', long, default_value = "50")]
     top_k: usize,
 
-    /// Minimum hybrid RRF score for a chunk to be included.
-    #[arg(short = 't', long, default_value = "0.3")]
+    /// Minimum cosine similarity (0.0–1.0) for a chunk to be retrieved.
+    /// Applied to cosine scores *before* RRF fusion.
+    #[arg(short = 't', long, default_value = "0.04")]
     similarity_threshold: f64,
 }
 
@@ -66,18 +64,43 @@ struct AgentConfig {
     context_size: Option<usize>,
 }
 
-// ── Per-folder indexed state ────────────────────────────────────────────────
+// ── Per-folder metadata ─────────────────────────────────────────────────────
 
-struct FolderState {
+struct FolderMeta {
     name: String,
-    store: Box<dyn ragrig::store::VectorStore>,
+    path: PathBuf,
     _temp: Option<tempfile::TempDir>,
 }
 
 // ── Chunking config (shared across all folders) ──────────────────────────────
 
 fn chunk_config() -> ChunkConfig {
-    ChunkConfig { size: 1024, overlap: 128 }
+    ChunkConfig {
+        size: 1024,
+        overlap: 128,
+    }
+}
+
+/// Fixture folders are extracted fresh from compile-time embedded data, so any
+/// ragrig state files that ship alongside them (e.g. a stale vector store from
+/// a previous indexing run) are artifacts, not fixture content.  Wipe them so
+/// every run indexes the fixture documents from scratch, deterministically —
+/// stale stores would otherwise trip ragrig 1.0's embedder-metadata guard.
+fn clean_fixture_state(dir: &std::path::Path) {
+    for name in [
+        ".ragrig_store",
+        ".ragrig_embeddings.json",
+        ".ragrig_history",
+    ] {
+        let path = dir.join(name);
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let ragrig_dir = dir.join(".ragrig");
+    if ragrig_dir.exists() {
+        let _ = std::fs::remove_dir_all(ragrig_dir);
+    }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -104,18 +127,17 @@ async fn main() -> Result<()> {
 
     let chat_mode = !config.chat.is_empty();
 
-    let embedder = EmbedderSpec::Ollama {
-        model: cli.embed_model.clone(),
-    }
-    .build()?;
+    let embedder = EmbedderSpec::ollama(cli.embed_model.clone()).build()?;
     let parsers = DocumentParsers::new(build_parsers());
 
-    // Resolve folders — fixtures get extracted to temp dirs.
-    let mut folder_states: Vec<FolderState> = Vec::new();
+    // ── Phase 1: Index all folders ──────────────────────────────────────
+
+    let mut folders: Vec<FolderMeta> = Vec::new();
     for raw in &config.folders {
         let (folder_path, display_name, temp_guard) =
             if let Some(format) = raw.strip_prefix("@fixtures/") {
                 let (p, dir) = ragrig::fixtures::extract_fixtures(format)?;
+                clean_fixture_state(&p);
                 let name = format!("{} (fixture)", format);
                 eprintln!("  Extracted {} fixtures → {}", format, p.display());
                 (p, name, Some(dir))
@@ -128,34 +150,30 @@ async fn main() -> Result<()> {
                 (p, name, None)
             };
 
-        let config = chunk_config();
+        let cc = chunk_config();
         let store = open_store(&folder_path).await?;
         eprintln!("Indexing {} …", folder_path.display());
 
-        let current_hashes = get_document_file_hashes(&folder_path)?;
-        let hashes_path = get_embeddings_file_path(&folder_path);
-        let stored_meta: Option<HashMetadata> = if hashes_path.exists() {
-            let raw = std::fs::read_to_string(&hashes_path)?;
-            Some(serde_json::from_str(&raw)?)
-        } else {
-            None
-        };
-        let stored_entries = stored_meta
-            .as_ref()
-            .map(|m| m.file_hashes.as_slice())
-            .unwrap_or(&[]);
-        let changed = get_changed_documents(&current_hashes, stored_entries);
+        // One corpus per folder, incrementally synced: new/changed documents
+        // are indexed, removed ones deleted, unchanged ones skipped via the
+        // store's manifest.  This corpus path replaced the hand-rolled
+        // `.ragrig_embeddings.json` hash bookkeeping in ragrig 1.0.0.
+        let corpus = FolderCorpus::named(display_name.clone(), folder_path.clone());
+        let stats = sync_corpus(
+            &corpus,
+            &parsers,
+            &MarkdownChunker,
+            &*embedder,
+            &cc,
+            &*store,
+        )
+        .await?;
+        let indexed: usize = stats.iter().map(|s| s.chunks).sum();
 
-        if !changed.is_empty() {
-            embed_documents(&*embedder, &parsers, &config, changed, &*store).await?;
-        }
-        remove_deleted_embeddings(&*store, &current_hashes).await?;
-        update_file_hashes(&current_hashes, &hashes_path)?;
-
-        eprintln!("  {} chunks ready.", store.len());
-        folder_states.push(FolderState {
+        eprintln!("  {} chunks ready ({} in this run).", store.len(), indexed);
+        folders.push(FolderMeta {
             name: display_name,
-            store,
+            path: folder_path,
             _temp: temp_guard,
         });
     }
@@ -166,73 +184,73 @@ async fn main() -> Result<()> {
     println!("# RAG Benchmark — {}", today);
     println!();
 
-    // ── Query loop (agent outer → model stays loaded) ────────────────────
+    // ── Phase 2: Run benchmarks ─────────────────────────────────────────
 
     for agent_cfg in &config.agents {
         let agent_label = format!("{} / {}", agent_cfg.backend, agent_cfg.model);
         let effective_ctx = agent_cfg.context_size.unwrap_or(cli.context_size);
-        let chat = build_agent(agent_cfg)?;
+
+        // Build ONE RagAgent per (backend, model).  The store is hot-swapped
+        // per folder / mode below.  The default system prompt is kept — it
+        // contains the `{context}` placeholder, so retrieved chunks actually
+        // reach the model (an empty prompt would silently drop them).
+        let bootstrap_store = open_store(&folders[0].path).await?;
+        let mut agent = RagAgent::builder()
+            .chat(build_chat_agent(agent_cfg)?)
+            .embed(EmbedderSpec::ollama(cli.embed_model.clone()).build()?)
+            .store(bootstrap_store)
+            .context_tokens(effective_ctx)
+            .top_k(cli.top_k)
+            .similarity_threshold(cli.similarity_threshold)
+            .build()?;
 
         println!("## {}", agent_label);
         println!();
 
         if chat_mode {
-            run_chat_mode(
-                &*embedder,
-                &cli,
-                effective_ctx,
-                &folder_states,
-                &config.chat,
-                &*chat,
-                &agent_label,
-            )
-            .await?;
+            run_chat_mode(&mut agent, &cli, &folders, &config.chat, &agent_label).await?;
         } else {
-            for (qi, query) in config.queries.iter().enumerate() {
-                println!("### Q{}: {}", qi + 1, query);
-                println!();
+            for folder in &folders {
+                // Hot-swap the store.
+                let store = open_store(&folder.path).await?;
+                agent.set_store(store);
 
-                for folder_state in &folder_states {
+                for (qi, query) in config.queries.iter().enumerate() {
                     eprintln!(
-                        "  {} ← \"{}\"",
+                        "  {} / {} ← \"{}\"",
                         agent_label,
+                        folder.name,
                         &query[..query.len().min(60)]
                     );
 
-                    let start = std::time::Instant::now();
-
-                    let result = run_query(
-                        &*embedder,
-                        cli.top_k,
-                        cli.similarity_threshold,
-                        effective_ctx,
-                        &*folder_state.store,
-                        query,
-                        &*chat,
-                    )
-                    .await;
-
-                    let elapsed = start.elapsed();
-
-                    println!("#### {}", folder_state.name);
+                    println!("### Q{}: {}", qi + 1, query);
                     println!();
-                    match result {
-                        Ok(ref qr) => {
-                            println!(
-                                "_t={:.1} · k={} → {} · {} ctx · {:.1}s_",
-                                cli.similarity_threshold,
-                                cli.top_k,
-                                qr.chunks_found,
-                                effective_ctx,
-                                elapsed.as_secs_f64(),
-                            );
-                            println!();
-                            println!("{}", qr.answer.trim());
-                        }
-                        Err(e) => {
-                            println!("_Error: {}_", e);
-                        }
-                    }
+                    println!("#### {}", folder.name);
+                    println!();
+
+                    print_retrieval(agent.embedder(), agent.store(), &cli, query).await;
+
+                    let response = agent
+                        .generate_with_context_detailed(query, &[] as &[(&str, &str)])
+                        .await
+                        .unwrap_or_else(|e| RagResponse {
+                            answer: format!("_Error: {}_", e),
+                            system_prompt: String::new(),
+                            user_prompt: query.to_string(),
+                            chunks_retrieved: None,
+                            documents: None,
+                            rewritten_query: None,
+                            elapsed: None,
+                        });
+
+                    let chunks = response.chunks_retrieved.unwrap_or(0);
+                    let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                    println!(
+                        "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
+                        cli.similarity_threshold, cli.top_k, chunks, effective_ctx, secs,
+                    );
+                    println!();
+                    println!("{}", response.answer.trim());
                     println!();
                 }
             }
@@ -242,180 +260,122 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// ── Agent builder ───────────────────────────────────────────────────────────
-
-fn build_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> {
-    ChatAgentSpec::parse(&cfg.backend, Some(&cfg.model), cfg.api_key.as_deref())?.build()
-}
-
-// ── Chat mode (sequential conversation with history) ────────────────────────
+// ── Chat mode ───────────────────────────────────────────────────────────────
 
 async fn run_chat_mode(
-    embedder: &dyn ragrig::embed::Embedder,
+    agent: &mut RagAgent,
     cli: &Cli,
-    effective_ctx: usize,
-    folder_states: &[FolderState],
+    folders: &[FolderMeta],
     messages: &[String],
-    chat: &dyn ragrig::agents::Generator,
     agent_label: &str,
 ) -> Result<()> {
     println!("### Chat");
     println!();
 
-    for folder_state in folder_states {
-        println!("#### {}", folder_state.name);
+    for folder in folders {
+        let store = open_store(&folder.path).await?;
+        agent.set_store(store);
+
+        println!("#### {}", folder.name);
         println!();
 
-        let mut history = String::new();
+        let mut transcript: Vec<(String, String)> = Vec::new();
 
         for msg in messages {
             eprintln!(
-                "  {} ← \"{}\"",
+                "  {} / {} ← \"{}\"",
                 agent_label,
+                folder.name,
                 &msg[..msg.len().min(60)]
             );
 
-            let start = std::time::Instant::now();
+            print_retrieval(agent.embedder(), agent.store(), cli, msg).await;
 
-            // Search with the raw message.
-            let embedded = embedder.embed(vec![msg.clone()]).await?;
-            let query_vec: Vec<f32> = embedded
-                .first()
-                .map(|(_, v)| v.clone())
-                .ok_or_else(|| anyhow!("Failed to get query embedding"))?;
-
-            let results = folder_state
-                .store
-                .search(&query_vec, msg, cli.top_k, cli.similarity_threshold)
-                .await?;
-            let chunks_found = results.len();
-
-            let context = results
-                .iter()
-                .enumerate()
-                .map(|(i, sc)| {
-                    format!(
-                        "[{}] (source: {}, score: {:.3})\n{}\n",
-                        i + 1,
-                        sc.chunk.source_file,
-                        sc.score,
-                        sc.chunk.text
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            // Build prompt with conversation history + context.
-            let full_prompt = if history.is_empty() {
-                format!(
-                    "{}\n\nQuery: {}",
-                    CHAT_PROMPT.replace("{context}", &context),
-                    msg
+            let response = agent
+                .generate_with_context_detailed(
+                    msg,
+                    &transcript
+                        .iter()
+                        .map(|(u, a)| (u.as_str(), a.as_str()))
+                        .collect::<Vec<_>>(),
                 )
-            } else {
-                format!(
-                    "{}\n\n{}\n\nQuery: {}",
-                    history,
-                    CHAT_PROMPT.replace("{context}", &context),
-                    msg
-                )
-            };
+                .await
+                .unwrap_or_else(|e| RagResponse {
+                    answer: format!("_Error: {}_", e),
+                    system_prompt: String::new(),
+                    user_prompt: msg.to_string(),
+                    chunks_retrieved: None,
+                    documents: None,
+                    rewritten_query: None,
+                    elapsed: None,
+                });
 
-            let answer = match chat.generate(&full_prompt).await {
-                Ok(a) => a,
-                Err(e) => {
-                    println!("**Q:** {}", msg);
-                    println!();
-                    println!("_Error: {}_", e);
-                    println!();
-                    break;
-                }
-            };
-
-            let elapsed = start.elapsed();
+            let chunks = response.chunks_retrieved.unwrap_or(0);
+            let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
 
             println!("**Q:** {}", msg);
             println!();
             println!(
-                "_t={:.1} · k={} → {} · {} ctx · {:.1}s_",
+                "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
                 cli.similarity_threshold,
                 cli.top_k,
-                chunks_found,
-                effective_ctx,
-                elapsed.as_secs_f64(),
+                chunks,
+                agent.context_tokens(),
+                secs,
             );
             println!();
-            println!("{}", answer.trim());
+            println!("{}", response.answer.trim());
             println!();
 
-            // Append to history for the next turn.
-            history.push_str(&format!("User: {}\nAssistant: {}\n", msg, answer));
+            transcript.push((msg.clone(), response.answer));
         }
     }
 
     Ok(())
 }
 
-// ── Single query execution (no history) ─────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-struct QueryResult {
-    answer: String,
-    chunks_found: usize,
-}
-
-async fn run_query(
-    embedder: &dyn ragrig::embed::Embedder,
-    top_k: usize,
-    threshold: f64,
-    _context_size: usize,
-    store: &dyn ragrig::store::VectorStore,
-    query: &str,
-    chat: &dyn ragrig::agents::Generator,
-) -> Result<QueryResult> {
-    let embedded = embedder.embed(vec![query.to_string()]).await?;
-    let query_vec: Vec<f32> = embedded
-        .first()
-        .map(|(_, v)| v.clone())
-        .ok_or_else(|| anyhow!("Failed to get query embedding"))?;
-
-    let results = store.search(&query_vec, query, top_k, threshold).await?;
-    let chunks_found = results.len();
-    if chunks_found == 0 {
-        return Ok(QueryResult {
-            answer: "_(no relevant documents found)_".into(),
-            chunks_found: 0,
-        });
+/// Print the ranked retrieval results for `query` against the agent's current
+/// store — the same embedder, top-k, and (pre-RRF) cosine threshold the
+/// generation pipeline uses.  `RagResponse` only reports a chunk *count*, so
+/// retrieval-quality benchmarks need these per-chunk results.  Scores come
+/// from the store's active ranker (e.g. RRF fusion values, not raw cosine).
+async fn print_retrieval(embedder: &dyn Embedder, store: &dyn VectorStore, cli: &Cli, query: &str) {
+    match search_similar(embedder, cli.top_k, cli.similarity_threshold, store, query).await {
+        Ok(results) => {
+            if results.is_empty() {
+                println!("_No chunks passed the similarity threshold._");
+            } else {
+                println!("**Retrieved** (ranked by store ranker):");
+                for (i, r) in results.iter().enumerate() {
+                    let snippet: String = r
+                        .chunk
+                        .text
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let snippet: String = snippet.chars().take(96).collect();
+                    println!(
+                        "{}. **{}** — {} — _{snippet}_",
+                        i + 1,
+                        r.chunk.document,
+                        r.score
+                    );
+                }
+            }
+            println!();
+        }
+        Err(e) => {
+            println!("_Retrieval error: {e}_");
+            println!();
+        }
     }
-
-    let context = results
-        .iter()
-        .enumerate()
-        .map(|(i, sc)| {
-            format!(
-                "[{}] (source: {}, score: {:.3})\n{}\n",
-                i + 1,
-                sc.chunk.source_file,
-                sc.score,
-                sc.chunk.text
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let full_prompt = format!(
-        "{}\n\nQuery: {}",
-        CHAT_PROMPT.replace("{context}", &context),
-        query
-    );
-
-    let answer = chat.generate(&full_prompt).await?;
-    Ok(QueryResult {
-        answer,
-        chunks_found,
-    })
 }
 
-// ── Tiny local-date helper ──────────────────────────────────────────────────
+fn build_chat_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> {
+    ChatAgentSpec::parse(&cfg.backend, Some(&cfg.model), cfg.api_key.as_deref(), None)?.build()
+}
 
 fn chrono_lite() -> Result<String> {
     let output = std::process::Command::new("date")
