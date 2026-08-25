@@ -90,41 +90,61 @@ produces a Markdown report you can read and compare.
 
 ## How It Works
 
-You write a JSON config file describing the benchmark matrix:
+You write a TOML config file describing the benchmark matrix.  The `chat`,
+`embed`, and `parse` sections reuse ragrig's own library config types
+(`ChatConfig`, `EmbedConfig`, `ParseConfig`), so the field vocabulary is
+identical to the REPL's profiles — omitted fields use the library defaults.
 
-```json
-{
-  "questions": [
-    "What are the key findings?",
-    "Summarize the methodology.",
-    "What conclusions does the author draw?"
-  ],
-  "folders": [
-    "/home/mart/Documents/coursework"
-  ],
-  "agents": [
-    { "backend": "ollama", "model": "qwen2.5:1.5b", "context_size": 4096 },
-    { "backend": "ollama", "model": "gemma2:latest", "context_size": 8192 },
-    { "backend": "ollama", "model": "llama3.2:latest", "context_size": 4096 }
-  ]
-}
+```toml
+queries = [
+  "What are the key findings?",
+  "Summarize the methodology.",
+  "What conclusions does the author draw?",
+]
+
+corpus_dirs = ["coursework=/home/mart/Documents/coursework"]
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "qwen2.5:1.5b"
+context_tokens = 4096
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "gemma2:latest"
+context_tokens = 8192
+
+[embed]
+model = "nomic-embed-text:latest"
+top_k = 50
+similarity_threshold = 0.04
+
+[parse]
+chunk_size = 1024
+chunk_overlap = 128
 ```
 
 Then run:
 
 ```bash
-ragrig_bench bench.json > results.md
+ragrig_bench bench.toml > results.md
 ```
 
 **What happens under the hood:**
 
-1. Each folder is indexed once (incremental — re-runs skip unchanged files).
-2. The outer loop cycles through agents so each model is loaded once and stays
-   warm for all questions and folders — no thrashing.
-3. For every (agent, question, folder) combination the program embeds the
-   query, runs hybrid BM25+vector search, feeds the top chunks as context,
-   and collects the answer.
-4. History is off — every query is independent, results are not tainted by
+1. Every pipeline indexes every corpus into **one shared store** in the
+   workspace (`--workspace`, default `.ragrig_bench/`).  Each
+   (corpus, pipeline) pair gets its own provenance corpus name, so a
+   `PipelineFilter::for_corpus` selects exactly one pipeline at query time.
+2. Indexing is incremental — re-runs skip unchanged documents.
+3. The outer loop cycles through agents so each model is loaded once and stays
+   warm for all pipelines, corpora, and questions — no thrashing.
+4. For every (agent, pipeline, corpus, question) combination the program
+   embeds the query, runs hybrid BM25+vector search through the filtered
+   store, feeds the top chunks as context, and collects the answer.
+5. History is off — every query is independent, results are not tainted by
    previous answers.
 
 The output is a Markdown file structured for side-by-side comparison:
@@ -134,18 +154,35 @@ The output is a Markdown file structured for side-by-side comparison:
 
 ## ollama / gemma2:latest
 
-### Q1: What are the key findings?
+### unpdf · markdown
 
 #### coursework
+
+**Q1:** What are the key findings?
 …answer…
+```
 
-### Q2: Summarize the methodology.
-…
+Pipeline and corpus headings only appear when the matrix has more than one
+of each.
 
-## ollama / qwen2.5:1.5b
+### Benchmarking pipelines
 
-### Q1: What are the key findings?
-…
+Each `[[pipelines]]` entry pins the PDF parser and the chunker used to index
+every corpus; all pipelines share the one store and are queried separately
+via pipeline provenance.  Omit the section to run the default pipeline (the
+full parser registry + `MarkdownChunker`).  Chunker names come from
+`ragrig::available_chunkers()` — `markdown`, `token`, `chunkedrs-markdown`,
+`chunkedrs-recursive`, `chunkedrs-code`, `chunkedrs-html`, …; parser names are
+`unpdf`, `pdf-extract`, `pdfsink`, `sloppy-pdf`, `kreuzberg`, `vision-pdf`.
+
+```toml
+[[pipelines]]
+parser = "unpdf"
+chunker = "markdown"
+
+[[pipelines]]
+parser = "unpdf"
+chunker = "chunkedrs-markdown"
 ```
 
 ### Built-in test fixtures
@@ -154,15 +191,14 @@ To evaluate models without your own documents, use the `@fixtures/` prefix.
 It extracts compile-time embedded test documents (the same book in PDF, HTML,
 and R Markdown) into a temp directory:
 
-```json
-{
-  "questions": ["What is R?"],
-  "folders": ["@fixtures/pdf", "@fixtures/html", "@fixtures/rmd"],
-  "agents": [
-    { "backend": "ollama", "model": "gemma2:latest" },
-    { "backend": "ollama", "model": "llama3.2:latest" }
-  ]
-}
+```toml
+queries = ["What is R?"]
+corpus_dirs = ["book-pdf=@fixtures/pdf", "book-html=@fixtures/html", "book-rmd=@fixtures/rmd"]
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "gemma2:latest"
 ```
 
 ### Quick single query
@@ -182,22 +218,32 @@ You have a semester's worth of PDFs in `~/uni/biology` and a laptop with
 8 GB RAM.  You want to know: which model runs fast enough while still giving
 useful answers?
 
-```json
-{
-  "questions": [
-    "Explain the Krebs cycle in simple terms.",
-    "What is the role of mitochondria in apoptosis?",
-    "Compare aerobic and anaerobic respiration."
-  ],
-  "folders": ["~/uni/biology"],
-  "agents": [
-    { "backend": "ollama", "model": "qwen2.5:1.5b", "context_size": 2048 },
-    { "backend": "ollama", "model": "qwen2.5:1.5b", "context_size": 4096 },
-    { "backend": "ollama", "model": "gemma2:latest", "context_size": 4096 },
-    { "backend": "ollama", "model": "gemma2:latest", "context_size": 8192 },
-    { "backend": "ollama", "model": "llama3.2:latest", "context_size": 4096 }
-  ]
-}
+```toml
+queries = [
+  "Explain the Krebs cycle in simple terms.",
+  "What is the role of mitochondria in apoptosis?",
+  "Compare aerobic and anaerobic respiration.",
+]
+
+corpus_dirs = ["biology=~/uni/biology"]
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "qwen2.5:1.5b"
+context_tokens = 2048
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "qwen2.5:1.5b"
+context_tokens = 4096
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "gemma2:latest"
+context_tokens = 8192
 ```
 
 Run it, read the Markdown report, and pick the smallest model whose answers
@@ -210,34 +256,46 @@ You maintain a collection of 200+ papers in `~/literature/renewables` and
 need to answer detailed technical questions.  You have a workstation with
 32 GB RAM and can afford larger models.
 
-```json
-{
-  "questions": [
-    "What is the current state-of-the-art in perovskite solar cell efficiency?",
-    "Compare the lifecycle carbon footprint of wind and solar.",
-    "What are the main barriers to grid-scale battery storage?",
-    "Summarize policy recommendations for renewable energy adoption.",
-    "How do different geographical regions compare in solar potential?"
-  ],
-  "folders": ["~/literature/renewables"],
-  "agents": [
-    { "backend": "ollama", "model": "gemma2:latest", "context_size": 8192 },
-    { "backend": "ollama", "model": "llama3.2:latest", "context_size": 8192 },
-    { "backend": "ollama", "model": "mistral:latest", "context_size": 8192 }
-  ]
-}
+```toml
+queries = [
+  "What is the current state-of-the-art in perovskite solar cell efficiency?",
+  "Compare the lifecycle carbon footprint of wind and solar.",
+  "What are the main barriers to grid-scale battery storage?",
+]
+
+corpus_dirs = ["renewables=~/literature/renewables"]
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "gemma2:latest"
+context_tokens = 8192
+
+[[agents]]
+[agents.chat]
+provider = "Ollama"
+model = "llama3.2:latest"
+context_tokens = 8192
 ```
 
-With a large document set, also experiment with the search parameters:
+With a large document set, also experiment with the retrieval and chunking
+parameters in the `[embed]` and `[parse]` sections:
 
-```bash
-ragrig_bench -k 20 -t 0.1 bench.json > results.md
+```toml
+[embed]
+model = "nomic-embed-text:latest"
+top_k = 20
+similarity_threshold = 0.1
+
+[parse]
+chunk_size = 512
+chunk_overlap = 64
 ```
 
-`-k 20` caps retrieval at 20 chunks per query (the default is 50).  `-t 0.1`
-raises the cosine similarity threshold (default `0.04`) so only closely
-matching chunks are retrieved — the threshold is applied to cosine scores
-*before* RRF fusion, not to the fused RRF scores.
+`top_k = 20` caps retrieval at 20 chunks per query (the default is 50).
+`similarity_threshold = 0.1` raises the cosine similarity threshold (default
+`0.04`) so only closely matching chunks are retrieved — the threshold is
+applied to cosine scores *before* RRF fusion, not to the fused RRF scores.
 
 ## CLI Reference
 
@@ -245,20 +303,17 @@ matching chunks are retrieved — the threshold is applied to cosine scores
 Usage: ragrig_bench [OPTIONS] <CONFIG>
 
 Arguments:
-  <CONFIG>  Path to the JSON benchmark configuration file
+  <CONFIG>  Path to the TOML benchmark configuration file
 
 Options:
-  -c, --context-size <N>       Default context window (tokens) [default: 4096]
-  -e, --embed-model <MODEL>    Embedding model [default: nomic-embed-text]
-  -k, --top-k <N>              Chunks retrieved per query [default: 50]
-  -t, --similarity-threshold <F>  Minimum cosine similarity (0.0–1.0), applied
-                                  before RRF fusion [default: 0.04]
-  -h, --help                   Print help
-  -V, --version                Print version
+  -w, --workspace <DIR>  Workspace directory for the vector store
+                         [default: .ragrig_bench]
+  -h, --help             Print help
+  -V, --version          Print version
 ```
 
-Agents in the config can override the default context size with an optional
-`"context_size"` field.
+All benchmark parameters (models, top-k, thresholds, chunking, pipelines)
+live in the TOML config; the CLI only picks the file and the workspace.
 
 ## Requirements
 

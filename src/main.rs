@@ -1,44 +1,34 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use ragrig::{
-    ChatAgentSpec, ChunkConfig, Embedder, EmbedderSpec, FolderCorpus, MarkdownChunker, RagAgent,
-    RagResponse, VectorStore,
+    ChatAgentSpec, ChunkConfig, Chunker, Embedder, EmbedderSpec, FolderCorpus, Generator,
+    MarkdownChunker, PipelineFilter, RagAgent, RagResponse, VectorStore, available_chunkers,
     parsers::{DocumentParsers, build_parsers},
     store::open_store,
-    vector::{search_similar, sync_corpus},
+    sync_corpus,
+    types::{ChatConfig, EmbedConfig, EmbeddingProvider, ParseConfig, Provider},
 };
 use serde::Deserialize;
 use std::path::PathBuf;
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
-/// Benchmark ragrig retrieval quality across multiple folders, queries,
-/// and chat backends.  Results are written to stdout as Markdown.
+/// Benchmark ragrig retrieval quality across document corpora, queries,
+/// (parser, chunker) pipelines, and chat backends.  Results are written to
+/// stdout as Markdown.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Path to the JSON benchmark configuration file.
+    /// Path to the TOML benchmark configuration file.
     config: String,
 
-    /// Context window budget for prompt truncation (tokens).
-    #[arg(short = 'c', long, default_value = "4096")]
-    context_size: usize,
-
-    /// Embedding model passed to Ollama.
-    #[arg(short = 'e', long, default_value = "nomic-embed-text")]
-    embed_model: String,
-
-    /// Number of chunks to retrieve per query (top-k).
-    #[arg(short = 'k', long, default_value = "50")]
-    top_k: usize,
-
-    /// Minimum cosine similarity (0.0–1.0) for a chunk to be retrieved.
-    /// Applied to cosine scores *before* RRF fusion.
-    #[arg(short = 't', long, default_value = "0.04")]
-    similarity_threshold: f64,
+    /// Workspace directory for the vector store (created if missing).
+    /// One shared store holds every indexed pipeline.
+    #[arg(short = 'w', long, default_value = ".ragrig_bench")]
+    workspace: PathBuf,
 }
 
-// ── Input schema ────────────────────────────────────────────────────────────
+// ── Config schema ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct BenchmarkConfig {
@@ -48,59 +38,258 @@ struct BenchmarkConfig {
     /// Sequential chat — each response feeds into the next prompt.
     #[serde(default)]
     chat: Vec<String>,
-    folders: Vec<String>,
+    /// Named document corpora in `name=path` form.  A path prefixed with
+    /// `@fixtures/` extracts the library's embedded fixture set
+    /// (`pdf`, `rmd`, `html`) into a temp directory.
+    #[serde(default)]
+    corpus_dirs: Vec<String>,
+    /// Chat agents forming the benchmark matrix.
+    #[serde(default)]
     agents: Vec<AgentConfig>,
+    /// (parser, chunker) pipelines to compare.  Every pipeline indexes all
+    /// corpora into the shared store and is queried separately at runtime
+    /// via `PipelineFilter`.  Empty = one default pipeline (full parser
+    /// registry, `MarkdownChunker`).
+    #[serde(default)]
+    pipelines: Vec<PipelineConfig>,
+    /// Embedding / retrieval settings.  Omitted fields use the library
+    /// defaults (`EmbedConfig::default()`).
+    #[serde(default, deserialize_with = "deserialize_with_defaults")]
+    embed: EmbedConfig,
+    /// Chunk size / overlap applied by every pipeline.
+    #[serde(default, deserialize_with = "deserialize_with_defaults")]
+    parse: ParseConfig,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize)]
 struct AgentConfig {
-    backend: String,
-    model: String,
-    #[serde(default)]
-    api_key: Option<String>,
-    /// Per-agent context window override (tokens).  Falls back to the CLI
-    /// `--context-size` value when absent.
-    #[serde(default)]
-    context_size: Option<usize>,
+    /// Optional display label; defaults to `<provider> / <model>`.
+    label: Option<String>,
+    /// Chat settings — the library's `ChatConfig` (provider, model,
+    /// generation params, context window, system-prompt file, timeout).
+    /// Omitted fields use `ChatConfig::default()`.
+    #[serde(default, deserialize_with = "deserialize_with_defaults")]
+    chat: ChatConfig,
 }
 
-// ── Per-folder metadata ─────────────────────────────────────────────────────
+#[derive(Deserialize, Clone, Default)]
+struct PipelineConfig {
+    /// PDF parser by name (`"unpdf"`, `"pdf-extract"`, `"pdfsink"`,
+    /// `"sloppy-pdf"`, `"kreuzberg"`, `"vision-pdf"`).  `None` = the full
+    /// registry — the first parser that succeeds (the default pipeline).
+    parser: Option<String>,
+    /// Chunker by name (`"markdown"`, `"token"`, `"chunkedrs-*"`, …).
+    /// `None` = `MarkdownChunker`.
+    chunker: Option<String>,
+}
 
-struct FolderMeta {
+/// Deserialize `T` with missing fields filled from `T::default()`.  The
+/// library config types require every field, but benchmark files should only
+/// mention what they change.
+fn deserialize_with_defaults<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + serde::Serialize + Default,
+{
+    let provided = toml::Value::deserialize(deserializer)?;
+    let mut merged = serde_json::to_value(T::default()).map_err(serde::de::Error::custom)?;
+    let provided = serde_json::to_value(provided).map_err(serde::de::Error::custom)?;
+    if let (serde_json::Value::Object(defaults), serde_json::Value::Object(provided)) =
+        (&mut merged, provided)
+    {
+        for (key, value) in provided {
+            defaults.insert(key, value);
+        }
+    }
+    serde_json::from_value(merged).map_err(serde::de::Error::custom)
+}
+
+// ── Resolved pipeline / corpus ─────────────────────────────────────────────
+
+struct ResolvedPipeline {
+    label: String,
+    parsers: DocumentParsers,
+    chunker: Box<dyn Chunker>,
+}
+
+struct ResolvedCorpus {
+    /// User-facing corpus name from `corpus_dirs`.
     name: String,
     path: PathBuf,
+    /// Keeps extracted fixture temp dirs alive for the whole run.
     _temp: Option<tempfile::TempDir>,
 }
 
-// ── Chunking config (shared across all folders) ──────────────────────────────
-
-fn chunk_config() -> ChunkConfig {
-    ChunkConfig {
-        size: 1024,
-        overlap: 128,
+impl ResolvedCorpus {
+    /// Store-level corpus name: every pipeline indexes each source corpus
+    /// under a pipeline-scoped name, so a `PipelineFilter::for_corpus` alone
+    /// selects exactly one pipeline's chunks.  A filter on the parser field
+    /// cannot express "pdf chunks from parser X plus all non-pdf chunks", and
+    /// two pipelines sharing a chunker would otherwise mix.
+    fn scoped_name(&self, pipeline: &ResolvedPipeline) -> String {
+        format!("{}::{}", self.name, pipeline.label)
     }
 }
 
-/// Fixture folders are extracted fresh from compile-time embedded data, so any
-/// ragrig state files that ship alongside them (e.g. a stale vector store from
-/// a previous indexing run) are artifacts, not fixture content.  Wipe them so
-/// every run indexes the fixture documents from scratch, deterministically —
-/// stale stores would otherwise trip ragrig 1.0's embedder-metadata guard.
-fn clean_fixture_state(dir: &std::path::Path) {
-    for name in [
-        ".ragrig_store",
-        ".ragrig_embeddings.json",
-        ".ragrig_history",
-    ] {
-        let path = dir.join(name);
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        }
+// ── Resolution helpers ──────────────────────────────────────────────────────
+
+/// Resolve the `name=path` corpus specs.  Fixture paths (`@fixtures/<fmt>`)
+/// are extracted to temp dirs held alive by the returned entries.
+fn resolve_corpora(specs: &[String]) -> Result<Vec<ResolvedCorpus>> {
+    specs
+        .iter()
+        .map(|spec| {
+            let (name, raw) = spec
+                .split_once('=')
+                .ok_or_else(|| anyhow!("corpus '{spec}' must have the form 'name=path'"))?;
+            let (path, temp) = if let Some(format) = raw.strip_prefix("@fixtures/") {
+                let (p, dir) = ragrig::fixtures::extract_fixtures(format)?;
+                eprintln!("  Extracted {format} fixtures → {}", p.display());
+                (p, Some(dir))
+            } else {
+                (PathBuf::from(raw), None)
+            };
+            Ok(ResolvedCorpus {
+                name: name.to_string(),
+                path,
+                _temp: temp,
+            })
+        })
+        .collect()
+}
+
+fn chunker_names() -> String {
+    let names: Vec<&str> = available_chunkers().iter().map(|c| c.name()).collect();
+    names.join(", ")
+}
+
+/// Resolve the pipeline list.  An empty config yields one default pipeline:
+/// the full parser registry + `MarkdownChunker` (historical behaviour).
+fn resolve_pipelines(specs: &[PipelineConfig]) -> Result<Vec<ResolvedPipeline>> {
+    let specs: Vec<PipelineConfig> = if specs.is_empty() {
+        vec![PipelineConfig::default()]
+    } else {
+        specs.to_vec()
+    };
+    specs
+        .into_iter()
+        .map(|spec| {
+            let chunker: Box<dyn Chunker> = match &spec.chunker {
+                Some(name) => available_chunkers()
+                    .into_iter()
+                    .find(|c| c.name() == name)
+                    .ok_or_else(|| {
+                        anyhow!("unknown chunker '{name}'. Available: {}", chunker_names())
+                    })?,
+                None => Box::new(MarkdownChunker),
+            };
+            let parsers = parsers_for(spec.parser.as_deref())?;
+            let parser_label = spec
+                .parser
+                .clone()
+                .unwrap_or_else(|| "all-parsers".to_string());
+            Ok(ResolvedPipeline {
+                label: format!("{parser_label} · {}", chunker.name()),
+                parsers,
+                chunker,
+            })
+        })
+        .collect()
+}
+
+/// Parser registry for a pipeline.  `None` = every built-in parser; a name
+/// selects that PDF parser while keeping the single parsers for the other
+/// formats (epub, html, docx, markdown).
+fn parsers_for(pdf_parser: Option<&str>) -> Result<DocumentParsers> {
+    let registry = build_parsers();
+    let Some(name) = pdf_parser else {
+        return Ok(DocumentParsers::new(registry));
+    };
+    let pdf_names: Vec<&str> = registry
+        .iter()
+        .filter(|p| p.extensions().contains(&"pdf"))
+        .map(|p| p.name())
+        .collect();
+    if !pdf_names.contains(&name) {
+        bail!(
+            "unknown PDF parser '{name}'. Available: {}",
+            pdf_names.join(", ")
+        );
     }
-    let ragrig_dir = dir.join(".ragrig");
-    if ragrig_dir.exists() {
-        let _ = std::fs::remove_dir_all(ragrig_dir);
+    let filtered = registry
+        .into_iter()
+        .filter(|p| p.name() == name || !p.extensions().contains(&"pdf"))
+        .collect();
+    Ok(DocumentParsers::new(filtered))
+}
+
+// ── Backend builders (library spec enums) ──────────────────────────────────
+
+fn build_embedder(embed: &EmbedConfig) -> Result<Box<dyn Embedder>> {
+    let spec = match &embed.provider {
+        EmbeddingProvider::Ollama => EmbedderSpec::Ollama {
+            model: embed.model.clone(),
+            request_timeout_secs: embed.request_timeout_secs,
+        },
+        // Fastembed (when compiled in) and future variants go through
+        // `parse`, which reports the backends available in this build.
+        other => EmbedderSpec::parse(&format!("{other:?}").to_lowercase(), Some(&embed.model))?,
+    };
+    spec.build()
+}
+
+fn build_chat_agent(chat: &ChatConfig) -> Result<Box<dyn Generator>> {
+    let spec = match &chat.provider {
+        Provider::Ollama => ChatAgentSpec::ollama(
+            chat.model.clone(),
+            chat.params.clone(),
+            chat.request_timeout_secs,
+        ),
+        Provider::Deepseek => ChatAgentSpec::deepseek(
+            chat.deepseek_model.clone(),
+            chat.deepseek_api_key.clone(),
+            chat.params.clone(),
+            chat.request_timeout_secs,
+        ),
+        other => bail!("chat provider {other:?} is not supported by this build"),
+    };
+    spec.build()
+}
+
+fn build_agent(
+    agent_cfg: &AgentConfig,
+    embed_cfg: &EmbedConfig,
+    store: Box<dyn VectorStore>,
+) -> Result<RagAgent> {
+    let chat = &agent_cfg.chat;
+    let mut builder = RagAgent::builder()
+        .chat(build_chat_agent(chat)?)
+        .embed(build_embedder(embed_cfg)?)
+        .store(store)
+        .context_tokens(chat.context_tokens)
+        .top_k(embed_cfg.top_k)
+        .similarity_threshold(embed_cfg.similarity_threshold);
+    if let Some(path) = &chat.system_prompt_path {
+        let prompt = std::fs::read_to_string(path)
+            .with_context(|| format!("reading system prompt {}", path.display()))?;
+        builder = builder.system_prompt(prompt);
     }
+    builder.build()
+}
+
+fn agent_label(cfg: &AgentConfig) -> String {
+    if let Some(label) = &cfg.label {
+        return label.clone();
+    }
+    let model = match &cfg.chat.provider {
+        Provider::Ollama => &cfg.chat.model,
+        Provider::Deepseek => &cfg.chat.deepseek_model,
+        _ => "unknown",
+    };
+    format!(
+        "{} / {model}",
+        format!("{:?}", cfg.chat.provider).to_lowercase()
+    )
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -109,149 +298,151 @@ fn clean_fixture_state(dir: &std::path::Path) {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let raw = std::fs::read_to_string(&cli.config)?;
-    let config: BenchmarkConfig = serde_json::from_str(&raw)?;
+    let raw = std::fs::read_to_string(&cli.config)
+        .with_context(|| format!("reading config {}", cli.config))?;
+    let config: BenchmarkConfig =
+        toml::from_str(&raw).with_context(|| format!("parsing config {}", cli.config))?;
 
     if config.queries.is_empty() && config.chat.is_empty() {
-        anyhow::bail!("Config must contain 'queries' or 'chat'.");
+        bail!("config must contain 'queries' or 'chat'.");
     }
     if !config.queries.is_empty() && !config.chat.is_empty() {
-        anyhow::bail!("Config must not contain both 'queries' and 'chat' — pick one.");
+        bail!("config must not contain both 'queries' and 'chat' — pick one.");
     }
-    if config.folders.is_empty() {
-        anyhow::bail!("Config must contain at least one folder.");
+    if config.corpus_dirs.is_empty() {
+        bail!("config must contain at least one 'corpus_dirs' entry.");
     }
     if config.agents.is_empty() {
-        anyhow::bail!("Config must contain at least one agent.");
+        bail!("config must contain at least one [[agents]] entry.");
     }
 
-    let chat_mode = !config.chat.is_empty();
+    std::fs::create_dir_all(&cli.workspace)
+        .with_context(|| format!("creating workspace {}", cli.workspace.display()))?;
 
-    let embedder = EmbedderSpec::ollama(cli.embed_model.clone()).build()?;
-    let parsers = DocumentParsers::new(build_parsers());
+    let embedder = build_embedder(&config.embed)?;
+    let chunk_cfg = ChunkConfig {
+        size: config.parse.chunk_size,
+        overlap: config.parse.chunk_overlap,
+    };
+    let corpus_entries = resolve_corpora(&config.corpus_dirs)?;
+    let pipelines = resolve_pipelines(&config.pipelines)?;
 
-    // ── Phase 1: Index all folders ──────────────────────────────────────
-
-    let mut folders: Vec<FolderMeta> = Vec::new();
-    for raw in &config.folders {
-        let (folder_path, display_name, temp_guard) =
-            if let Some(format) = raw.strip_prefix("@fixtures/") {
-                let (p, dir) = ragrig::fixtures::extract_fixtures(format)?;
-                clean_fixture_state(&p);
-                let name = format!("{} (fixture)", format);
-                eprintln!("  Extracted {} fixtures → {}", format, p.display());
-                (p, name, Some(dir))
-            } else {
-                let p = PathBuf::from(raw);
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| raw.clone());
-                (p, name, None)
-            };
-
-        let cc = chunk_config();
-        let store = open_store(&folder_path).await?;
-        eprintln!("Indexing {} …", folder_path.display());
-
-        // One corpus per folder, incrementally synced: new/changed documents
-        // are indexed, removed ones deleted, unchanged ones skipped via the
-        // store's manifest.  This corpus path replaced the hand-rolled
-        // `.ragrig_embeddings.json` hash bookkeeping in ragrig 1.0.0.
-        let corpus = FolderCorpus::named(display_name.clone(), folder_path.clone());
-        let stats = sync_corpus(
-            &corpus,
-            &parsers,
-            &MarkdownChunker,
-            &*embedder,
-            &cc,
-            &*store,
-        )
-        .await?;
-        let indexed: usize = stats.iter().map(|s| s.chunks).sum();
-
-        eprintln!("  {} chunks ready ({} in this run).", store.len(), indexed);
-        folders.push(FolderMeta {
-            name: display_name,
-            path: folder_path,
-            _temp: temp_guard,
-        });
+    // ── Phase 1: index every pipeline into the shared store ─────────────
+    {
+        let store = open_store(&cli.workspace).await?;
+        for pipeline in &pipelines {
+            eprintln!("Indexing pipeline '{}' …", pipeline.label);
+            let mut indexed = 0;
+            for corpus_entry in &corpus_entries {
+                let corpus =
+                    FolderCorpus::named(corpus_entry.scoped_name(pipeline), &corpus_entry.path);
+                let stats = sync_corpus(
+                    &corpus,
+                    &pipeline.parsers,
+                    &*pipeline.chunker,
+                    &*embedder,
+                    &chunk_cfg,
+                    &*store,
+                )
+                .await?;
+                indexed += stats.iter().map(|s| s.chunks).sum::<usize>();
+            }
+            eprintln!(
+                "  {} chunks in store ({} indexed in this run).",
+                store.len(),
+                indexed
+            );
+        }
     }
-
-    // ── Header ──────────────────────────────────────────────────────────
 
     let today = chrono_lite()?;
-    println!("# RAG Benchmark — {}", today);
+    println!("# RAG Benchmark — {today}");
     println!();
 
-    // ── Phase 2: Run benchmarks ─────────────────────────────────────────
+    let chat_mode = !config.chat.is_empty();
+    let multi_pipeline = pipelines.len() > 1;
+    let multi_corpus = corpus_entries.len() > 1;
 
+    // ── Phase 2: run the benchmark matrix ───────────────────────────────
     for agent_cfg in &config.agents {
-        let agent_label = format!("{} / {}", agent_cfg.backend, agent_cfg.model);
-        let effective_ctx = agent_cfg.context_size.unwrap_or(cli.context_size);
+        let label = agent_label(agent_cfg);
+        let store = open_store(&cli.workspace).await?;
+        let mut agent = build_agent(agent_cfg, &config.embed, store)?;
 
-        // Build ONE RagAgent per (backend, model).  The store is hot-swapped
-        // per folder / mode below.  The default system prompt is kept — it
-        // contains the `{context}` placeholder, so retrieved chunks actually
-        // reach the model (an empty prompt would silently drop them).
-        let bootstrap_store = open_store(&folders[0].path).await?;
-        let mut agent = RagAgent::builder()
-            .chat(build_chat_agent(agent_cfg)?)
-            .embed(EmbedderSpec::ollama(cli.embed_model.clone()).build()?)
-            .store(bootstrap_store)
-            .context_tokens(effective_ctx)
-            .top_k(cli.top_k)
-            .similarity_threshold(cli.similarity_threshold)
-            .build()?;
-
-        println!("## {}", agent_label);
+        println!("## {label}");
         println!();
 
-        if chat_mode {
-            run_chat_mode(&mut agent, &cli, &folders, &config.chat, &agent_label).await?;
-        } else {
-            for folder in &folders {
-                // Hot-swap the store.
-                let store = open_store(&folder.path).await?;
-                agent.set_store(store);
-
-                for (qi, query) in config.queries.iter().enumerate() {
-                    eprintln!(
-                        "  {} / {} ← \"{}\"",
-                        agent_label,
-                        folder.name,
-                        &query[..query.len().min(60)]
-                    );
-
-                    println!("### Q{}: {}", qi + 1, query);
+        for pipeline in &pipelines {
+            if multi_pipeline {
+                println!("### {}", pipeline.label);
+                println!();
+            }
+            for corpus_entry in &corpus_entries {
+                if multi_corpus {
+                    println!("#### {}", corpus_entry.name);
                     println!();
-                    println!("#### {}", folder.name);
-                    println!();
+                }
+                let filter = PipelineFilter::for_corpus(corpus_entry.scoped_name(pipeline));
+                agent.set_search_filter(Some(filter.clone()));
 
-                    print_retrieval(agent.embedder(), agent.store(), &cli, query).await;
+                if chat_mode {
+                    run_chat_mode(
+                        &mut agent,
+                        &config.embed,
+                        &filter,
+                        &config.chat,
+                        &label,
+                        &corpus_entry.name,
+                    )
+                    .await?;
+                } else {
+                    for (qi, query) in config.queries.iter().enumerate() {
+                        eprintln!(
+                            "  {label} / {} / {} ← \"{}\"",
+                            pipeline.label,
+                            corpus_entry.name,
+                            &query[..query.len().min(60)]
+                        );
 
-                    let response = agent
-                        .generate_with_context_detailed(query, &[] as &[(&str, &str)])
-                        .await
-                        .unwrap_or_else(|e| RagResponse {
-                            answer: format!("_Error: {}_", e),
-                            system_prompt: String::new(),
-                            user_prompt: query.to_string(),
-                            chunks_retrieved: None,
-                            documents: None,
-                            rewritten_query: None,
-                            elapsed: None,
-                        });
+                        println!("**Q{}:** {query}", qi + 1);
+                        println!();
 
-                    let chunks = response.chunks_retrieved.unwrap_or(0);
-                    let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                    println!(
-                        "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
-                        cli.similarity_threshold, cli.top_k, chunks, effective_ctx, secs,
-                    );
-                    println!();
-                    println!("{}", response.answer.trim());
-                    println!();
+                        print_retrieval(
+                            agent.embedder(),
+                            agent.store(),
+                            &config.embed,
+                            &filter,
+                            query,
+                        )
+                        .await;
+
+                        let response = agent
+                            .generate_with_context_detailed(query, &[] as &[(&str, &str)])
+                            .await
+                            .unwrap_or_else(|e| RagResponse {
+                                answer: format!("_Error: {e}_"),
+                                system_prompt: String::new(),
+                                user_prompt: query.to_string(),
+                                chunks_retrieved: None,
+                                documents: None,
+                                rewritten_query: None,
+                                elapsed: None,
+                            });
+
+                        let chunks = response.chunks_retrieved.unwrap_or(0);
+                        let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                        println!(
+                            "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
+                            config.embed.similarity_threshold,
+                            config.embed.top_k,
+                            chunks,
+                            agent.context_tokens(),
+                            secs,
+                        );
+                        println!();
+                        println!("{}", response.answer.trim());
+                        println!();
+                    }
                 }
             }
         }
@@ -262,73 +453,62 @@ async fn main() -> Result<()> {
 
 // ── Chat mode ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn run_chat_mode(
     agent: &mut RagAgent,
-    cli: &Cli,
-    folders: &[FolderMeta],
+    embed_cfg: &EmbedConfig,
+    filter: &PipelineFilter,
     messages: &[String],
     agent_label: &str,
+    corpus_name: &str,
 ) -> Result<()> {
-    println!("### Chat");
-    println!();
+    let mut transcript: Vec<(String, String)> = Vec::new();
 
-    for folder in folders {
-        let store = open_store(&folder.path).await?;
-        agent.set_store(store);
+    for msg in messages {
+        eprintln!(
+            "  {agent_label} / {corpus_name} ← \"{}\"",
+            &msg[..msg.len().min(60)]
+        );
 
-        println!("#### {}", folder.name);
+        print_retrieval(agent.embedder(), agent.store(), embed_cfg, filter, msg).await;
+
+        let response = agent
+            .generate_with_context_detailed(
+                msg,
+                &transcript
+                    .iter()
+                    .map(|(u, a)| (u.as_str(), a.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap_or_else(|e| RagResponse {
+                answer: format!("_Error: {e}_"),
+                system_prompt: String::new(),
+                user_prompt: msg.to_string(),
+                chunks_retrieved: None,
+                documents: None,
+                rewritten_query: None,
+                elapsed: None,
+            });
+
+        let chunks = response.chunks_retrieved.unwrap_or(0);
+        let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+
+        println!("**Q:** {msg}");
+        println!();
+        println!(
+            "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
+            embed_cfg.similarity_threshold,
+            embed_cfg.top_k,
+            chunks,
+            agent.context_tokens(),
+            secs,
+        );
+        println!();
+        println!("{}", response.answer.trim());
         println!();
 
-        let mut transcript: Vec<(String, String)> = Vec::new();
-
-        for msg in messages {
-            eprintln!(
-                "  {} / {} ← \"{}\"",
-                agent_label,
-                folder.name,
-                &msg[..msg.len().min(60)]
-            );
-
-            print_retrieval(agent.embedder(), agent.store(), cli, msg).await;
-
-            let response = agent
-                .generate_with_context_detailed(
-                    msg,
-                    &transcript
-                        .iter()
-                        .map(|(u, a)| (u.as_str(), a.as_str()))
-                        .collect::<Vec<_>>(),
-                )
-                .await
-                .unwrap_or_else(|e| RagResponse {
-                    answer: format!("_Error: {}_", e),
-                    system_prompt: String::new(),
-                    user_prompt: msg.to_string(),
-                    chunks_retrieved: None,
-                    documents: None,
-                    rewritten_query: None,
-                    elapsed: None,
-                });
-
-            let chunks = response.chunks_retrieved.unwrap_or(0);
-            let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-
-            println!("**Q:** {}", msg);
-            println!();
-            println!(
-                "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
-                cli.similarity_threshold,
-                cli.top_k,
-                chunks,
-                agent.context_tokens(),
-                secs,
-            );
-            println!();
-            println!("{}", response.answer.trim());
-            println!();
-
-            transcript.push((msg.clone(), response.answer));
-        }
+        transcript.push((msg.clone(), response.answer));
     }
 
     Ok(())
@@ -336,13 +516,40 @@ async fn run_chat_mode(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Print the ranked retrieval results for `query` against the agent's current
-/// store — the same embedder, top-k, and (pre-RRF) cosine threshold the
-/// generation pipeline uses.  `RagResponse` only reports a chunk *count*, so
-/// retrieval-quality benchmarks need these per-chunk results.  Scores come
-/// from the store's active ranker (e.g. RRF fusion values, not raw cosine).
-async fn print_retrieval(embedder: &dyn Embedder, store: &dyn VectorStore, cli: &Cli, query: &str) {
-    match search_similar(embedder, cli.top_k, cli.similarity_threshold, store, query).await {
+/// Print the ranked retrieval results for `query` — the same embedder, top-k,
+/// cosine threshold, and pipeline/corpus filter the generation uses.
+/// `RagResponse` only reports a chunk *count*, so retrieval-quality runs need
+/// these per-chunk results.  Scores come from the store's active ranker.
+async fn print_retrieval(
+    embedder: &dyn Embedder,
+    store: &dyn VectorStore,
+    embed_cfg: &EmbedConfig,
+    filter: &PipelineFilter,
+    query: &str,
+) {
+    let embedded = match embedder.embed(vec![query.to_string()]).await {
+        Ok(embedded) => embedded,
+        Err(e) => {
+            println!("_Embedding error: {e}_");
+            println!();
+            return;
+        }
+    };
+    let Some((_, query_vec)) = embedded.into_iter().next() else {
+        println!("_Embedding error: no vector returned._");
+        println!();
+        return;
+    };
+    match store
+        .search_filtered(
+            &query_vec,
+            query,
+            embed_cfg.top_k,
+            embed_cfg.similarity_threshold,
+            filter,
+        )
+        .await
+    {
         Ok(results) => {
             if results.is_empty() {
                 println!("_No chunks passed the similarity threshold._");
@@ -371,10 +578,6 @@ async fn print_retrieval(embedder: &dyn Embedder, store: &dyn VectorStore, cli: 
             println!();
         }
     }
-}
-
-fn build_chat_agent(cfg: &AgentConfig) -> Result<Box<dyn ragrig::agents::Generator>> {
-    ChatAgentSpec::parse(&cfg.backend, Some(&cfg.model), cfg.api_key.as_deref(), None)?.build()
 }
 
 fn chrono_lite() -> Result<String> {

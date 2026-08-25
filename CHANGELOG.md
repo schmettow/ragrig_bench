@@ -37,10 +37,33 @@ All notable changes to `ragrig_bench` will be documented in this file.
   and the benchmark compared bare-LLM answers.  The library's default
   document-assistant prompt is now used.
 - **Fixture state wiped before indexing**: the embedded HTML fixture folder
-  ships stale ragrig state (`.ragrig_store`, `.ragrig_embeddings.json`,
+  shipped stale ragrig state (`.ragrig_store`, `.ragrig_embeddings.json`,
   `.ragrig/`), which tripped ragrig 1.0's embedder-metadata guard on
-  `@fixtures/html`.  Fixture folders are extracted fresh per run, so any
-  ragrig state inside them is removed before syncing.
+  `@fixtures/html`.  Worked around by wiping state after extraction — later
+  superseded by ragrig's build-script fixture staging (see Removed).
+
+### Added
+
+- **TOML configuration via library config types**: the benchmark file is now
+  TOML, and the `[agents.chat]`, `[embed]`, and `[parse]` sections reuse
+  ragrig's own `ChatConfig`, `EmbedConfig`, and `ParseConfig` — fields omitted
+  fall back to the library defaults.  The `-c/-e/-k/-t` CLI flags are gone;
+  every benchmark parameter lives in the config and the CLI keeps only
+  `--workspace`.
+- **Corpora instead of per-folder stores**: `corpus_dirs = ["name=path"]`
+  indexes every corpus into ONE shared store in the workspace (no more
+  `.ragrig_store` state written into document folders), queried per corpus via
+  `PipelineFilter::for_corpus`.
+- **Pipeline benchmarking**: `[[pipelines]]` pins (parser, chunker)
+  combinations; every pipeline indexes all corpora into the shared store and
+  is queried separately at runtime via pipeline provenance.  Each
+  (corpus, pipeline) pair is stored under a pipeline-scoped corpus name, so a
+  corpus-only filter selects exactly one pipeline's chunks.
+
+### Removed
+
+- `clean_fixture_state` — ragrig's build script now stages fixtures without
+  `.ragrig*` state, so extracted fixtures are clean by construction.
 
 ## [0.2.0] — 2026-06-16
 

@@ -1,0 +1,42 @@
+# Benchmark config — ragrig-bench
+# One shared workspace store; every pipeline indexes all corpora and is
+# queried separately via PipelineFilter.
+
+# ── Question set: 'queries' (independent) XOR 'chat' (sequential) ──
+queries = [
+  "What is this document about?",
+  "How is AIC related to WAIC?",
+]
+
+# ── Corpora: name=path; @fixtures/<fmt> extracts the library's fixtures ──
+corpus_dirs = ["book=@fixtures/html"]
+
+# ── Chat agents ─────────────────────────────────────────────────────────────
+[[agents]]
+label = "gemma2"
+
+[agents.chat]
+provider = "Ollama"
+model = "gemma2:latest"
+context_tokens = 8192
+
+# ── Embedding / retrieval (omitted fields use library defaults) ─────────────
+[embed]
+model = "nomic-embed-text:latest"
+top_k = 50
+similarity_threshold = 0.04
+
+# ── Chunking ────────────────────────────────────────────────────────────────
+[parse]
+chunk_size = 1024
+chunk_overlap = 128
+
+# ── Pipelines to compare (parser × chunker).  Omit to run the default
+#    pipeline (full parser registry + MarkdownChunker). ─────────────────────
+# [[pipelines]]
+# parser = "unpdf"
+# chunker = "markdown"
+#
+# [[pipelines]]
+# parser = "unpdf"
+# chunker = "chunkedrs-markdown"
