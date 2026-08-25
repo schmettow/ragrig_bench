@@ -49,6 +49,17 @@ async fn main() -> Result<()> {
     };
 
     let embedder = build_embedder(&config.embed, config.mock.embedder)?;
+    // The workspace database is bound to ONE embedder: ragrig's
+    // embedder-metadata guard rejects a different model/dimension on first
+    // insert.  Print the identity up front so mismatches are self-evident.
+    writeln!(
+        log,
+        "Workspace: {} — embedder: {}/{} ({} dims)",
+        cli.workspace.display(),
+        embedder.backend_name(),
+        embedder.model_name(),
+        embedder.dimension()
+    )?;
     let chunk_cfg = chunk_config(&config.parse);
     let corpus_entries = resolve_corpora(&config.corpus_dirs, log.as_mut())?;
     let pipelines = resolve_pipelines(&config.pipelines)?;

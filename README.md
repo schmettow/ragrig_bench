@@ -146,6 +146,9 @@ on Linux/macOS to apply immediately.
    (corpus, pipeline) pair gets its own provenance corpus name, so a
    `PipelineFilter::for_corpus` selects exactly one pipeline at query time.
    Indexing is incremental — re-runs skip unchanged documents.
+   **One workspace per embedder**: the database is bound to the embedder
+   that built it (ragrig's embedder-metadata guard), so keep mock and live
+   runs in separate workspaces.
 2. **Interaction** (`ragrig-bench-interact`) runs the benchmark matrix
    against that database.  Provenance is the only seam between the two
    processes: a requested provenance missing from the database produces a

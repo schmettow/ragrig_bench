@@ -75,7 +75,10 @@ All notable changes to `ragrig_bench` will be documented in this file.
   the ingestion log; interact: the Markdown report).  Provenance is the only
   seam: a requested provenance missing from the database produces a helpful
   error pointing back at the ingest step (`count_matching` gate, plus a
-  "no vector database" error when the workspace store is absent).
+  "no vector database" error when the workspace store is absent).  Ingest
+  also prints the workspace/embedder binding up front — the database is
+  bound to one embedder (ragrig's embedder-metadata guard), so mock and
+  live runs need separate workspaces.
 
 ### Removed
 
