@@ -1,0 +1,60 @@
+# Copy of chat_ctx.toml with the agent dimension added: every context-size
+# sweep point (1024/2048/4096/8192 tokens) runs twice — once on the ragrig
+# default chat backend (Ollama, qwen3.5:9b) and once on the DeepSeek default
+# (deepseek-v4-pro; API key from the DEEPSEEK_API_KEY env var).
+# Three-turn chat through the default ragrig pipeline, corpus = the embedded
+# HTML fixture book.
+
+corpus_dirs = ["book=@fixtures/html"]
+
+chat = [
+  "What is this book about?",
+  "What does it say about Bayesian statistics?",
+  "What were we talking about?",
+]
+
+# ── ragrig default backend: Ollama, qwen3.5:9b ──────────────────────────────
+[[agents]]
+label = "ragrig-1024"
+[agents.chat]
+context_tokens = 1024
+
+[[agents]]
+label = "ragrig-2048"
+[agents.chat]
+context_tokens = 2048
+
+[[agents]]
+label = "ragrig-4096"
+[agents.chat]
+context_tokens = 4096
+
+[[agents]]
+label = "ragrig-8192"
+[agents.chat]
+context_tokens = 8192
+
+# ── DeepSeek default backend: deepseek-v4-pro ──────────────────────────────
+[[agents]]
+label = "deepseek-1024"
+[agents.chat]
+provider = "Deepseek"
+context_tokens = 1024
+
+[[agents]]
+label = "deepseek-2048"
+[agents.chat]
+provider = "Deepseek"
+context_tokens = 2048
+
+[[agents]]
+label = "deepseek-4096"
+[agents.chat]
+provider = "Deepseek"
+context_tokens = 4096
+
+[[agents]]
+label = "deepseek-8192"
+[agents.chat]
+provider = "Deepseek"
+context_tokens = 8192

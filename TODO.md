@@ -8,12 +8,10 @@ runs the full matrix offline in milliseconds.
 
 ## Benchmark dimensions
 
-- **Ranker as a config variable** — make the ranker a benchmark dimension
-  like `chunker` / `parser`, including its parameters:
-  `HybridRrfRanker { k }`, `WeightedFusionRanker { alpha }`,
-  `MmrDiversityRanker { lambda }`, `LlmReranker` — and the search parameters
-  (top-k, similarity threshold) — instead of the single hard-wired default
-  ranker.
+- **Ranker as a config variable** — done for the basic sweep (`[[rankers]]`:
+  `rrf`, `cosine`, `bm25`, `weighted { alpha }`, `mmr { lambda }`, swapped
+  per cell at query time).  Remaining parameters: `HybridRrfRanker { k }`
+  and the `LlmReranker` backend.
 - **Embedder as a pipeline dimension** — blocked by the store's
   embedder-metadata guard (one embedder per store); needs per-embedder
   stores.  Decide whether the config gains multiple stores or the embedder

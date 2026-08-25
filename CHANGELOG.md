@@ -67,6 +67,10 @@ All notable changes to `ragrig_bench` will be documented in this file.
   full matrix with zero network, zero disk, in milliseconds.
 - **`--out/-o <FILE>`**: the Markdown report can be written to a file instead
   of stdout; progress messages stay on stderr.
+- **Ranker as a config variable**: `[[rankers]]` sweeps ranking strategies at
+  query time (`rrf`, `cosine`, `bm25`, `weighted` with alpha, `mmr` with
+  lambda); the store's ranker is swapped per cell via `set_ranker` and the
+  report shows a `##### ranker:` heading plus the ranker in the meta line.
 - **Ingestion and interaction split into two binaries**: the workflow is now
   two strictly sequential processes sharing the TOML config and the workspace
   — `ragrig-bench-ingest` walks every requested provenance (pipeline ×

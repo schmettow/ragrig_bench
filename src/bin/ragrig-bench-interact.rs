@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use ragrig::{Embedder, PipelineFilter, RagAgent, RagResponse, VectorStore};
 use ragrig_bench::{
-    agent_label, build_agent, corpus_names, load_config, pipeline_labels, scoped_corpus_name,
-    validate_matrix,
+    agent_label, build_agent, build_ranker, corpus_names, load_config, pipeline_labels,
+    ranker_configs, ranker_label, scoped_corpus_name, validate_matrix,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -66,8 +66,10 @@ async fn main() -> Result<()> {
     let chat_mode = !config.chat.is_empty();
     let corpus_names = corpus_names(&config.corpus_dirs)?;
     let pipeline_labels = pipeline_labels(&config.pipelines)?;
+    let rankers = ranker_configs(&config.rankers);
     let multi_pipeline = pipeline_labels.len() > 1;
     let multi_corpus = corpus_names.len() > 1;
+    let multi_ranker = rankers.len() > 1;
 
     // ── The benchmark matrix ───────────────────────────────────────────
     for agent_cfg in &config.agents {
@@ -107,64 +109,77 @@ async fn main() -> Result<()> {
 
                 agent.set_search_filter(Some(filter.clone()));
 
-                if chat_mode {
-                    run_chat_mode(
-                        &mut agent,
-                        out.as_mut(),
-                        &config.embed,
-                        &filter,
-                        &config.chat,
-                        &label,
-                        corpus_name,
-                    )
-                    .await?;
-                } else {
-                    for (qi, query) in config.queries.iter().enumerate() {
-                        eprintln!(
-                            "  {label} / {pipeline_label} / {corpus_name} ← \"{}\"",
-                            &query[..query.len().min(60)]
-                        );
-
-                        writeln!(out, "**Q{}:** {query}", qi + 1)?;
+                for ranker_cfg in &rankers {
+                    if multi_ranker {
+                        writeln!(out, "##### ranker: {}", ranker_label(ranker_cfg))?;
                         writeln!(out)?;
+                    }
+                    // The ranker lives in the store and is swapped at query
+                    // time — it is not part of ingestion/provenance.
+                    agent.store().set_ranker(build_ranker(ranker_cfg)?)?;
 
-                        print_retrieval(
+                    if chat_mode {
+                        run_chat_mode(
+                            &mut agent,
                             out.as_mut(),
-                            agent.embedder(),
-                            agent.store(),
                             &config.embed,
                             &filter,
-                            query,
+                            &config.chat,
+                            &label,
+                            corpus_name,
+                            &ranker_label(ranker_cfg),
                         )
                         .await?;
+                    } else {
+                        for (qi, query) in config.queries.iter().enumerate() {
+                            eprintln!(
+                                "  {label} / {pipeline_label} / {corpus_name} / {} ← \"{}\"",
+                                ranker_label(ranker_cfg),
+                                &query[..query.len().min(60)]
+                            );
 
-                        let response = agent
-                            .generate_with_context_detailed(query, &[] as &[(&str, &str)])
-                            .await
-                            .unwrap_or_else(|e| RagResponse {
-                                answer: format!("_Error: {e}_"),
-                                system_prompt: String::new(),
-                                user_prompt: query.to_string(),
-                                chunks_retrieved: None,
-                                documents: None,
-                                rewritten_query: None,
-                                elapsed: None,
-                            });
+                            writeln!(out, "**Q{}:** {query}", qi + 1)?;
+                            writeln!(out)?;
 
-                        let chunks = response.chunks_retrieved.unwrap_or(0);
-                        let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                        writeln!(
-                            out,
-                            "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
-                            config.embed.similarity_threshold,
-                            config.embed.top_k,
-                            chunks,
-                            agent.context_tokens(),
-                            secs,
-                        )?;
-                        writeln!(out)?;
-                        writeln!(out, "{}", response.answer.trim())?;
-                        writeln!(out)?;
+                            print_retrieval(
+                                out.as_mut(),
+                                agent.embedder(),
+                                agent.store(),
+                                &config.embed,
+                                &filter,
+                                query,
+                            )
+                            .await?;
+
+                            let response = agent
+                                .generate_with_context_detailed(query, &[] as &[(&str, &str)])
+                                .await
+                                .unwrap_or_else(|e| RagResponse {
+                                    answer: format!("_Error: {e}_"),
+                                    system_prompt: String::new(),
+                                    user_prompt: query.to_string(),
+                                    chunks_retrieved: None,
+                                    documents: None,
+                                    rewritten_query: None,
+                                    elapsed: None,
+                                });
+
+                            let chunks = response.chunks_retrieved.unwrap_or(0);
+                            let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                            writeln!(
+                                out,
+                                "_ranker={} · t={} · k={} → {} in context · {} ctx · {:.1}s_",
+                                ranker_label(ranker_cfg),
+                                config.embed.similarity_threshold,
+                                config.embed.top_k,
+                                chunks,
+                                agent.context_tokens(),
+                                secs,
+                            )?;
+                            writeln!(out)?;
+                            writeln!(out, "{}", response.answer.trim())?;
+                            writeln!(out)?;
+                        }
                     }
                 }
             }
@@ -186,6 +201,7 @@ async fn run_chat_mode(
     messages: &[String],
     agent_label: &str,
     corpus_name: &str,
+    ranker: &str,
 ) -> Result<()> {
     let mut transcript: Vec<(String, String)> = Vec::new();
 
@@ -223,7 +239,7 @@ async fn run_chat_mode(
         writeln!(out)?;
         writeln!(
             out,
-            "_t={} · k={} → {} in context · {} ctx · {:.1}s_",
+            "_ranker={ranker} · t={} · k={} → {} in context · {} ctx · {:.1}s_",
             embed_cfg.similarity_threshold,
             embed_cfg.top_k,
             chunks,

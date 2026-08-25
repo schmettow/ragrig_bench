@@ -199,6 +199,22 @@ parser = "unpdf"
 chunker = "chunkedrs-markdown"
 ```
 
+### Benchmarking rankers
+
+Ranking happens at query time, so rankers are an interaction-side dimension
+(`[[rankers]]`), swapped into the store per cell — not part of ingestion or
+provenance.  Omit the section for the default hybrid RRF ranker.  Available:
+`rrf` (default), `cosine` (α=1), `bm25` (α=0), `weighted` (α, default 0.5),
+and `mmr` (diversity `lambda` over RRF).
+
+```toml
+[[rankers]]
+name = "rrf"
+
+[[rankers]]
+name = "cosine"
+```
+
 ### Mock mode — fast, offline combinatorics
 
 For testing the matrix itself (headers, ordering, output structure) without a

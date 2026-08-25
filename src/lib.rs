@@ -17,8 +17,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use ragrig::{
     ChatAgentSpec, ChunkConfig, Chunker, Corpus, Document, DocumentData, DocumentId, Embedder,
-    EmbedderSpec, FolderCorpus, Generator, MarkdownChunker, MutexGenerator, SimpleGenerator,
-    VectorStore, available_chunkers,
+    EmbedderSpec, FolderCorpus, Generator, HybridRrfRanker, MarkdownChunker, MmrDiversityRanker,
+    MutexGenerator, Ranker, SimpleGenerator, VectorStore, WeightedFusionRanker, available_chunkers,
     parsers::{DocumentParsers, build_parsers},
     types::{ChatConfig, EmbedConfig, EmbeddingProvider, ParseConfig, Provider},
 };
@@ -62,6 +62,24 @@ pub struct BenchmarkConfig {
     /// backends (see `mock.toml`).
     #[serde(default)]
     pub mock: MockConfig,
+    /// Rankers to sweep in the benchmark matrix (interaction side — ranking
+    /// happens at query time, so rankers are not part of ingestion or
+    /// provenance).  Empty = the single default hybrid RRF ranker.
+    #[serde(default)]
+    pub rankers: Vec<RankerConfig>,
+}
+
+/// One ranker variant of the benchmark matrix.
+#[derive(Deserialize, Clone, Default)]
+pub struct RankerConfig {
+    /// Ranker name: `"rrf"` (default hybrid), `"cosine"` (α=1), `"bm25"`
+    /// (α=0), `"weighted"` (α=0.5 or custom), `"mmr"` (diversity re-ranking
+    /// over RRF).
+    pub name: String,
+    /// [`WeightedFusionRanker`] alpha (0.0–1.0): 0 = BM25, 1 = cosine.
+    pub alpha: Option<f64>,
+    /// [`MmrDiversityRanker`] lambda (0.0–1.0 diversity penalty).
+    pub lambda: Option<f64>,
 }
 
 /// Offline, deterministic mock backends for fast combinatorial runs.
@@ -341,6 +359,45 @@ fn parsers_for(pdf_parser: Option<&str>) -> Result<DocumentParsers> {
         .filter(|p| p.name() == name || !p.extensions().contains(&"pdf"))
         .collect();
     Ok(DocumentParsers::new(filtered))
+}
+
+// ── Rankers (interaction side) ──────────────────────────────────────────────
+
+/// The ranker list to sweep, defaulting to the single default hybrid RRF
+/// ranker when the config omits `[[rankers]]`.
+pub fn ranker_configs(specs: &[RankerConfig]) -> Vec<RankerConfig> {
+    if specs.is_empty() {
+        vec![RankerConfig::default()]
+    } else {
+        specs.to_vec()
+    }
+}
+
+/// Display label for a ranker config (`"rrf"` when the name is empty).
+pub fn ranker_label(cfg: &RankerConfig) -> String {
+    match cfg.name.as_str() {
+        "" => "rrf".to_string(),
+        name => name.to_string(),
+    }
+}
+
+/// Resolve a ranker config into a concrete ranker.  The ranker is swapped
+/// into the store at query time (`VectorStore::set_ranker`) — it is not part
+/// of ingestion or provenance.
+pub fn build_ranker(cfg: &RankerConfig) -> Result<Box<dyn Ranker>> {
+    match cfg.name.as_str() {
+        "" | "rrf" => Ok(Box::new(HybridRrfRanker::default())),
+        "cosine" => Ok(Box::new(WeightedFusionRanker { alpha: 1.0 })),
+        "bm25" => Ok(Box::new(WeightedFusionRanker { alpha: 0.0 })),
+        "weighted" => Ok(Box::new(WeightedFusionRanker {
+            alpha: cfg.alpha.unwrap_or(0.5),
+        })),
+        "mmr" => Ok(Box::new(MmrDiversityRanker {
+            lambda: cfg.lambda.unwrap_or(0.5),
+            inner: Box::new(HybridRrfRanker::default()),
+        })),
+        other => bail!("unknown ranker '{other}'. Available: rrf, cosine, bm25, weighted, mmr"),
+    }
 }
 
 // ── Mock components (offline, deterministic) ────────────────────────────────
