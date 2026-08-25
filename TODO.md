@@ -7,13 +7,25 @@ milliseconds.
 
 ## Benchmark dimensions
 
-- **Ranker sweeps** — add a ranker axis via `RagAgentBuilder::ranker()`:
-  `HybridRrfRanker` (default), `WeightedFusionRanker`, `MmrDiversityRanker`,
-  `LlmReranker`.
+- **Ranker as a config variable** — make the ranker a benchmark dimension
+  like `chunker` / `parser`, including its parameters:
+  `HybridRrfRanker { k }`, `WeightedFusionRanker { alpha }`,
+  `MmrDiversityRanker { lambda }`, `LlmReranker` — and the search parameters
+  (top-k, similarity threshold) — instead of the single hard-wired default
+  ranker.
 - **Embedder as a pipeline dimension** — blocked by the store's
   embedder-metadata guard (one embedder per store); needs per-embedder
   stores.  Decide whether the config gains multiple stores or the embedder
   stays global.
+
+## Workflow
+
+- **Ingestion phase vs. chat phase** — split the run into two strictly
+  sequential processes: the ingestion process walks all requested
+  provenances (parser × chunker × corpus, and ranker once it is a variable)
+  and builds the combined vector database; only then does the chat process
+  run its queries against it.  No chat work may start before every
+  provenance is indexed.
 
 ## Observability & robustness
 
@@ -28,6 +40,12 @@ milliseconds.
 
 ## Config
 
+- **Memory strategy instead of `queries`/`chat` modes** — remove the
+  external variation between coherent chat and one-shot questions: one
+  question list plus a memory-strategy setting drives whether turns
+  accumulate history.  One-shot questions = `NoopMemory` (empty transcript
+  per query, the current `queries` behaviour); coherent chat carries the
+  transcript forward (the current `chat` behaviour).
 - **`corpus_urls` / `UrlCorpus`** — support URL corpora like the REPL does.
 - **`context_size_mode`** — wire `ChatConfig.context_size_mode` through to
   generation (currently only `context_tokens` is used).
