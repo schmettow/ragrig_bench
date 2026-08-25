@@ -72,6 +72,9 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 - `clean_fixture_state` — ragrig's build script now stages fixtures without
   `.ragrig*` state, so extracted fixtures are clean by construction.
+- `ragrigio` — the stdin-piped single-query binary.  The main `ragrig-bench`
+  tool covers that flow (`mock.toml` for quick offline runs, or a one-question
+  TOML config); keeping one binary simplifies the crate.
 
 ## [0.2.0] — 2026-06-16
 

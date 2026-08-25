@@ -39,5 +39,3 @@ milliseconds.
   are old run outputs.
 - **`chrono_lite()`** — replace the `date` subprocess with a real date crate
   or a `std::time`-derived timestamp.
-- **`ragrigio`** — still opens its store in the CWD (its documents live
-  there, so it works) but could gain the same TOML/workspace treatment.

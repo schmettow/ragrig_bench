@@ -4,79 +4,6 @@ Systematically compare local LLMs for retrieval-augmented generation to find
 the sweet spot between capability, speed, and hardware requirements for your
 specific use case.
 
-## Installation
-
-You need Rust, Ollama, and the embedding model.  Then pull whichever chat
-models you want to benchmark.
-
-```bash
-# 1. Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 2. Install Ollama — https://ollama.com/download
-
-# 3. Pull the embedding model (required — not something you benchmark)
-ollama pull nomic-embed-text
-
-# 4. Pull the chat models you want to compare
-ollama pull gemma2:latest
-ollama pull llama3.2:latest
-ollama pull qwen2.5:1.5b
-
-# 5. Build
-cargo build --release --bin ragrig_bench --bin ragrigio
-
-# Quick test without installing:
-cargo run --release --bin ragrigio <<< "What is this document about?"
-
-# 6. Install to ~/bin
-mkdir -p ~/bin
-cp target/release/ragrig_bench target/release/ragrigio ~/bin/
-
-# 7. Verify
-~/bin/ragrig_bench --help
-```
-
-Binaries land in `~/bin`.  No C++ toolchain, no `cmake`, no `protoc`
-— pure Rust.
-
-If `ragrig_bench --help` says "command not found", `~/bin` isn't on your
-`PATH`.  Here's how to fix it.
-
-**Check whether it's already set:**
-
-```bash
-echo $PATH | grep --color "$HOME/bin"   # Linux / macOS / WSL
-```
-
-```powershell
-$env:Path -split ";" | Select-String "$env:USERPROFILE\bin"   # Windows PowerShell
-```
-
-**Add it if missing:**
-
-*Linux / WSL / macOS* — append to your shell config (`~/.bashrc`, `~/.zshrc`,
-or `~/.profile` depending on your shell):
-
-```bash
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-*Windows (PowerShell)* — add permanently for your user:
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-    "Path",
-    "$env:USERPROFILE\bin;" + [Environment]::GetEnvironmentVariable("Path", "User"),
-    "User"
-)
-$env:Path = "$env:USERPROFILE\bin;$env:Path"   # apply to current session
-```
-
-Restart your terminal after the permanent change, or `source` the config file
-on Linux/macOS to apply immediately.
-
 ## Purpose
 
 When you set up a local RAG system you face a trade-off: bigger models give
@@ -132,7 +59,82 @@ Then run:
 ragrig_bench bench.toml > results.md
 ```
 
-**What happens under the hood:**
+## Installation
+
+You need Rust, Ollama, and the embedding model.  Then pull whichever chat
+models you want to benchmark.
+
+```bash
+# 1. Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 2. Install Ollama — https://ollama.com/download
+
+# 3. Pull the embedding model (required — not something you benchmark)
+ollama pull nomic-embed-text
+
+# 4. Pull the chat models you want to compare
+ollama pull gemma2:latest
+ollama pull llama3.2:latest
+ollama pull qwen2.5:1.5b
+
+# 5. Build
+cargo build --release
+
+# Quick test without installing:
+cargo run --release -- -w /tmp/bench_ws -o /tmp/report.md mock.toml
+
+# 6. Install to ~/bin
+mkdir -p ~/bin
+cp target/release/ragrig-bench ~/bin/
+
+# 7. Verify
+~/bin/ragrig-bench --help
+```
+
+The binary lands in `~/bin`.  No C++ toolchain, no `cmake`, no `protoc`
+— pure Rust.
+
+If `ragrig-bench --help` says "command not found", `~/bin` isn't on your
+`PATH`.  Here's how to fix it.
+
+**Check whether it's already set:**
+
+```bash
+echo $PATH | grep --color "$HOME/bin"   # Linux / macOS / WSL
+```
+
+```powershell
+$env:Path -split ";" | Select-String "$env:USERPROFILE\bin"   # Windows PowerShell
+```
+
+**Add it if missing:**
+
+*Linux / WSL / macOS* — append to your shell config (`~/.bashrc`, `~/.zshrc`,
+or `~/.profile` depending on your shell):
+
+```bash
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+*Windows (PowerShell)* — add permanently for your user:
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "Path",
+    "$env:USERPROFILE\bin;" + [Environment]::GetEnvironmentVariable("Path", "User"),
+    "User"
+)
+$env:Path = "$env:USERPROFILE\bin;$env:Path"   # apply to current session
+```
+
+Restart your terminal after the permanent change, or `source` the config file
+on Linux/macOS to apply immediately.
+
+
+
+## What happens under the hood:
 
 1. Every pipeline indexes every corpus into **one shared store** in the
    workspace (`--workspace`, default `.ragrig_bench/`).  Each
@@ -167,7 +169,7 @@ of each.
 
 ### Benchmarking pipelines
 
-Each `[[pipelines]]` entry pins the PDF parser and the chunker used to index
+Each `[[pipelines]]` entry pins the document parser and the chunker used to index
 every corpus; all pipelines share the one store and are queried separately
 via pipeline provenance.  Omit the section to run the default pipeline (the
 full parser registry + `MarkdownChunker`).  Chunker names come from
@@ -221,13 +223,13 @@ provider = "Ollama"
 model = "gemma2:latest"
 ```
 
-### Quick single query
+### Quick start (offline)
 
-The crate also includes `ragrigio` — a minimal binary that indexes the current
-directory and answers one question from stdin:
+`mock.toml` runs a fully offline matrix — mock generator, mock embedder,
+synthetic corpus — no Ollama, no documents on disk:
 
 ```bash
-echo "What is the central argument?" | ragrigio
+ragrig-bench -w /tmp/bench_ws -o report.md mock.toml
 ```
 
 ## Examples
