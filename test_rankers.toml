@@ -8,7 +8,9 @@ corpus_dirs = ["book=@fixtures/html"]
 
 queries = [
   "What does this book say about Bayesian statistics?",
-  "What do I do, when my response time measures are not normal?"
+  "What do I do, when my response time measures are not normal?",
+  "What are non-human populations?",
+  "How important is checking the assumptions of the linear model?"
 ]
 
 [[agents]]
