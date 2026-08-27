@@ -387,15 +387,17 @@ pub fn ranker_label(cfg: &RankerConfig) -> String {
 pub fn build_ranker(cfg: &RankerConfig) -> Result<Box<dyn Ranker>> {
     match cfg.name.as_str() {
         "" | "rrf" => Ok(Box::new(HybridRrfRanker::default())),
-        "cosine" => Ok(Box::new(WeightedFusionRanker { alpha: 1.0 })),
-        "bm25" => Ok(Box::new(WeightedFusionRanker { alpha: 0.0 })),
-        "weighted" => Ok(Box::new(WeightedFusionRanker {
-            alpha: cfg.alpha.unwrap_or(0.5),
-        })),
-        "mmr" => Ok(Box::new(MmrDiversityRanker {
-            lambda: cfg.lambda.unwrap_or(0.5),
-            inner: Box::new(HybridRrfRanker::default()),
-        })),
+        // The validated constructors reject out-of-range alphas/lambdas at
+        // config time instead of failing late (or not at all) at query time.
+        "cosine" => Ok(Box::new(WeightedFusionRanker::new(1.0)?)),
+        "bm25" => Ok(Box::new(WeightedFusionRanker::new(0.0)?)),
+        "weighted" => Ok(Box::new(WeightedFusionRanker::new(
+            cfg.alpha.unwrap_or(0.5),
+        )?)),
+        "mmr" => Ok(Box::new(MmrDiversityRanker::new(
+            cfg.lambda.unwrap_or(0.5),
+            Box::new(HybridRrfRanker::default()),
+        )?)),
         other => bail!("unknown ranker '{other}'. Available: rrf, cosine, bm25, weighted, mmr"),
     }
 }

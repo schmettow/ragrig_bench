@@ -280,10 +280,11 @@ fn print_retrieved(out: &mut dyn Write, response: &RagResponse) -> Result<()> {
                 let snippet: String = snippet.chars().take(96).collect();
                 writeln!(
                     out,
-                    "{}. **{}** — {} — _{snippet}_",
+                    "{}. **{}** — {} ({}) — _{snippet}_",
                     i + 1,
                     r.chunk.document,
-                    r.score
+                    r.score,
+                    r.score.kind
                 )?;
             }
             writeln!(out)?;

@@ -8,6 +8,13 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ### Changed
 
+- **Rankers built via validated constructors** — ragrig's ranker fields are
+  private now; `build_ranker` goes through `WeightedFusionRanker::new` /
+  `MmrDiversityRanker::new`, so an out-of-range `alpha`/`lambda` in the
+  config fails at startup with a clear message instead of at query time.
+- **Scores are scale-tagged in the report** — every retrieved chunk prints
+  its `ScoreKind` next to the score (`0.0323 (rrf)`, `0.87 (cosine)`), so
+  scores from different rankers are no longer silently incomparable.
 - **`MockEmbedder` implements the `Embedding` contract** — ragrig's
   `Embedder::embed` now returns `Vec<Embedding>` (`{ text, vector }`)
   instead of `Vec<(String, Vec<f32>)`; the mock returns the named struct.

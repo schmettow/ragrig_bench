@@ -305,7 +305,7 @@ of each:
 _ranker=rrf · t=0.04 · k=50 → 12 in context · 8192 ctx · emb 0.1s · gen 2.9s · total 3.2s_
 
 **Retrieved** (ranked by store ranker):
-1. **lecture-03.pdf** — 0.0325 — _chunk snippet …_
+1. **lecture-03.pdf** — 0.0325 (rrf) — _chunk snippet …_
 
 …answer…
 ```
