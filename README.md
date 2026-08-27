@@ -301,16 +301,19 @@ of each:
 #### coursework
 
 **Q1:** What are the key findings?
+
+_ranker=rrf · t=0.04 · k=50 → 12 in context · 8192 ctx · emb 0.1s · gen 2.9s · total 3.2s_
+
 **Retrieved** (ranked by store ranker):
 1. **lecture-03.pdf** — 0.0325 — _chunk snippet …_
-
-_ranker=rrf · t=0.04 · k=50 → 12 in context · 8192 ctx · 3.2s_
 
 …answer…
 ```
 
-Each cell also lists the retrieved chunks (document, score, snippet) so
-retrieval quality is comparable across pipelines and rankers.
+Each cell lists the retrieved chunks (document, score, snippet — sourced
+from `RagResponse.retrieved`, so the query is embedded exactly once) and
+per-stage timings (`emb` / `gen` / `total`) for comparing where time goes
+across models and pipelines.
 
 ## Examples
 

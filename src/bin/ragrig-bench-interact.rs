@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use ragrig::{Embedder, PipelineFilter, RagAgent, RagResponse, VectorStore};
+use ragrig::{RagAgent, RagResponse};
 use ragrig_bench::{
     agent_label, apply_mock_mode, build_agent, build_ranker, cell_filter, corpus_names,
     load_config, pipeline_labels, ranker_configs, ranker_label, validate_matrix,
@@ -132,7 +132,6 @@ async fn main() -> Result<()> {
                             &mut agent,
                             out.as_mut(),
                             &config.embed,
-                            &filter,
                             &config.chat,
                             &label,
                             corpus_name,
@@ -150,16 +149,6 @@ async fn main() -> Result<()> {
                             writeln!(out, "**Q{}:** {query}", qi + 1)?;
                             writeln!(out)?;
 
-                            print_retrieval(
-                                out.as_mut(),
-                                agent.embedder(),
-                                agent.store(),
-                                &config.embed,
-                                &filter,
-                                query,
-                            )
-                            .await?;
-
                             let response = agent
                                 .generate_with_context_detailed(query, &[] as &[(&str, &str)])
                                 .await
@@ -169,23 +158,28 @@ async fn main() -> Result<()> {
                                     user_prompt: query.to_string(),
                                     chunks_retrieved: None,
                                     documents: None,
+                                    retrieved: None,
                                     rewritten_query: None,
                                     elapsed: None,
+                                    timings: ragrig::StageTimings::default(),
                                 });
 
                             let chunks = response.chunks_retrieved.unwrap_or(0);
                             let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
                             writeln!(
                                 out,
-                                "_ranker={} · t={} · k={} → {} in context · {} ctx · {:.1}s_",
+                                "_ranker={} · t={} · k={} → {} in context · {} ctx · emb {:.2}s · gen {:.2}s · total {:.1}s_",
                                 ranker_label(ranker_cfg),
                                 config.embed.similarity_threshold,
                                 config.embed.top_k,
                                 chunks,
                                 agent.context_tokens(),
+                                response.timings.embed.as_secs_f64(),
+                                response.timings.generate.as_secs_f64(),
                                 secs,
                             )?;
                             writeln!(out)?;
+                            print_retrieved(out.as_mut(), &response)?;
                             writeln!(out, "{}", response.answer.trim())?;
                             writeln!(out)?;
                         }
@@ -201,12 +195,10 @@ async fn main() -> Result<()> {
 
 // ── Chat mode ───────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 async fn run_chat_mode(
     agent: &mut RagAgent,
     out: &mut dyn Write,
     embed_cfg: &ragrig::types::EmbedConfig,
-    filter: &PipelineFilter,
     messages: &[String],
     agent_label: &str,
     corpus_name: &str,
@@ -220,7 +212,8 @@ async fn run_chat_mode(
             &msg[..msg.len().min(60)]
         );
 
-        print_retrieval(out, agent.embedder(), agent.store(), embed_cfg, filter, msg).await?;
+        writeln!(out, "**Q:** {msg}")?;
+        writeln!(out)?;
 
         let response = agent
             .generate_with_context_detailed(
@@ -237,25 +230,27 @@ async fn run_chat_mode(
                 user_prompt: msg.to_string(),
                 chunks_retrieved: None,
                 documents: None,
+                retrieved: None,
                 rewritten_query: None,
                 elapsed: None,
+                timings: ragrig::StageTimings::default(),
             });
 
         let chunks = response.chunks_retrieved.unwrap_or(0);
         let secs = response.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-
-        writeln!(out, "**Q:** {msg}")?;
-        writeln!(out)?;
         writeln!(
             out,
-            "_ranker={ranker} · t={} · k={} → {} in context · {} ctx · {:.1}s_",
+            "_ranker={ranker} · t={} · k={} → {} in context · {} ctx · emb {:.2}s · gen {:.2}s · total {:.1}s_",
             embed_cfg.similarity_threshold,
             embed_cfg.top_k,
             chunks,
             agent.context_tokens(),
+            response.timings.embed.as_secs_f64(),
+            response.timings.generate.as_secs_f64(),
             secs,
         )?;
         writeln!(out)?;
+        print_retrieved(out, &response)?;
         writeln!(out, "{}", response.answer.trim())?;
         writeln!(out)?;
 
@@ -267,69 +262,39 @@ async fn run_chat_mode(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Print the ranked retrieval results for `query` — the same embedder, top-k,
-/// cosine threshold, and provenance filter the generation uses.
-/// `RagResponse` only reports a chunk *count*, so retrieval-quality runs need
-/// these per-chunk results.  Scores come from the store's active ranker.
-async fn print_retrieval(
-    out: &mut dyn Write,
-    embedder: &dyn Embedder,
-    store: &dyn VectorStore,
-    embed_cfg: &ragrig::types::EmbedConfig,
-    filter: &PipelineFilter,
-    query: &str,
-) -> Result<()> {
-    let embedded = match embedder.embed(vec![query.to_string()]).await {
-        Ok(embedded) => embedded,
-        Err(e) => {
-            writeln!(out, "_Embedding error: {e}_")?;
-            writeln!(out)?;
-            return Ok(());
-        }
-    };
-    let Some((_, query_vec)) = embedded.into_iter().next() else {
-        writeln!(out, "_Embedding error: no vector returned._")?;
-        writeln!(out)?;
-        return Ok(());
-    };
-    match store
-        .search_filtered(
-            &query_vec,
-            query,
-            embed_cfg.top_k,
-            embed_cfg.similarity_threshold,
-            filter,
-        )
-        .await
-    {
-        Ok(results) => {
-            if results.is_empty() {
-                writeln!(out, "_No chunks passed the similarity threshold._")?;
-            } else {
-                writeln!(out, "**Retrieved** (ranked by store ranker):")?;
-                for (i, r) in results.iter().enumerate() {
-                    let snippet: String = r
-                        .chunk
-                        .text
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let snippet: String = snippet.chars().take(96).collect();
-                    writeln!(
-                        out,
-                        "{}. **{}** — {} — _{snippet}_",
-                        i + 1,
-                        r.chunk.document,
-                        r.score
-                    )?;
-                }
+/// Print the retrieved chunks from the response's `retrieved` field — the
+/// exact store-ranked chunks the agent injected as context, so the query is
+/// embedded once (by the agent) instead of twice.  A successful cell with
+/// nothing retrieved means every chunk fell below the similarity threshold.
+fn print_retrieved(out: &mut dyn Write, response: &RagResponse) -> Result<()> {
+    match &response.retrieved {
+        Some(chunks) => {
+            writeln!(out, "**Retrieved** (ranked by store ranker):")?;
+            for (i, r) in chunks.iter().enumerate() {
+                let snippet: String = r
+                    .chunk
+                    .text
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let snippet: String = snippet.chars().take(96).collect();
+                writeln!(
+                    out,
+                    "{}. **{}** — {} — _{snippet}_",
+                    i + 1,
+                    r.chunk.document,
+                    r.score
+                )?;
             }
             writeln!(out)?;
         }
-        Err(e) => {
-            writeln!(out, "_Retrieval error: {e}_")?;
+        // An error cell reports its failure through the answer; a successful
+        // cell with nothing retrieved hit the similarity threshold.
+        None if !response.answer.starts_with("_Error:") => {
+            writeln!(out, "_No chunks passed the similarity threshold._")?;
             writeln!(out)?;
         }
+        None => {}
     }
     Ok(())
 }

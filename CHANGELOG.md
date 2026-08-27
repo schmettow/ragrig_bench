@@ -8,6 +8,13 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ### Changed
 
+- **Retrieval list sourced from `RagResponse.retrieved`** — ragrig's detailed
+  responses now carry the store-ranked chunks, so the report prints them from
+  the response instead of re-running `search_filtered` before every cell:
+  the query is embedded **once** per cell (by the agent), not twice.
+- **Per-stage timings in the meta line** — the report line gained
+  `emb` / `gen` / `total` (from `RagResponse.timings`), so each cell shows
+  where its time went in addition to the total.
 - **Backend construction via library conversions**: `build_chat_agent` and
   `build_embedder` now go through `ChatAgentSpec::try_from(&ChatConfig)` /
   `EmbedderSpec::try_from(&EmbedConfig)` — the config→spec mapping moved into
