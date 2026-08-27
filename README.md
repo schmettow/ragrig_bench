@@ -4,6 +4,11 @@ Systematically compare retrieval-augmented generation (RAG) setups on
 *your* documents and *your* questions, and find the sweet spot between
 answer quality, speed, and hardware requirements.
 
+> **Early development.** `ragrig_bench` is pre-1.0: the TOML config
+> schema, the CLI flags, and the report format may change between minor
+> releases, with breaking changes.  Expect to touch up your configs when
+> upgrading — the [changelog](CHANGELOG.md) lists every breaking change.
+
 ## Goals
 
 When you set up a local RAG system you face a trade-off: bigger models give

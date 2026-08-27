@@ -4,6 +4,8 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-27
+
 ### Changed
 
 - **Backend construction via library conversions**: `build_chat_agent` and
