@@ -53,12 +53,11 @@ All notable changes to `ragrig_bench` will be documented in this file.
 - **Corpora instead of per-folder stores**: `corpus_dirs = ["name=path"]`
   indexes every corpus into ONE shared store in the workspace (no more
   `.ragrig_store` state written into document folders), queried per corpus via
-  `PipelineFilter::for_corpus`.
+  `PipelineFilter`.
 - **Pipeline benchmarking**: `[[pipelines]]` pins (parser, chunker)
   combinations; every pipeline indexes all corpora into the shared store and
-  is queried separately at runtime via pipeline provenance.  Each
-  (corpus, pipeline) pair is stored under a pipeline-scoped corpus name, so a
-  corpus-only filter selects exactly one pipeline's chunks.
+  is queried separately at runtime via its **pipeline id**
+  (`PipelineProvenance.pipeline` → `PipelineFilter::for_pipeline`).
 - **Mock components (offline mode)**: `[mock] embedder = true` swaps in a
   deterministic bag-of-words embedder (word-overlap cosine retrieval); an
   agent with `answer = "…"` (a `{query}` template) uses a canned mock
@@ -77,7 +76,8 @@ All notable changes to `ragrig_bench` will be documented in this file.
   corpus) and builds the combined vector database, `ragrig-bench-interact`
   runs the benchmark matrix against it.  Both binaries take `--out` (ingest:
   the ingestion log; interact: the Markdown report).  Provenance is the only
-  seam: a requested provenance missing from the database produces a helpful
+  seam: every chunk is stamped with the pipeline id (`sync_corpus_with_pipeline`)
+  and a requested pipeline/corpus missing from the database produces a helpful
   error pointing back at the ingest step (`count_matching` gate, plus a
   "no vector database" error when the workspace store is absent).  Ingest
   also prints the workspace/embedder binding up front — the database is

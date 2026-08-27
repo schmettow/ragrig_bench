@@ -142,10 +142,12 @@ on Linux/macOS to apply immediately.
 
 1. **Ingestion** (`ragrig-bench-ingest`) walks every requested provenance
    (pipeline × corpus) and builds the combined vector database — one shared
-   store in the workspace (`--workspace`, default `.ragrig_bench/`).  Each
-   (corpus, pipeline) pair gets its own provenance corpus name, so a
-   `PipelineFilter::for_corpus` selects exactly one pipeline at query time.
-   Indexing is incremental — re-runs skip unchanged documents.
+   store in the workspace (`--workspace`, default `.ragrig_bench/`).  Every
+   chunk is stamped with the pipeline's id (`PipelineProvenance.pipeline`),
+   so a `PipelineFilter` on `corpus` + `pipeline` selects exactly one
+   pipeline's whole chunk set at query time — including shared chunks that
+   parser/chunker-only filters cannot isolate on mixed corpora.  Indexing is
+   incremental — re-runs skip unchanged documents.
    **One workspace per embedder**: the database is bound to the embedder
    that built it (ragrig's embedder-metadata guard), so keep mock and live
    runs in separate workspaces.

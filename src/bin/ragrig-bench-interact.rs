@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use ragrig::{Embedder, PipelineFilter, RagAgent, RagResponse, VectorStore};
 use ragrig_bench::{
-    agent_label, build_agent, build_ranker, corpus_names, load_config, pipeline_labels,
-    ranker_configs, ranker_label, scoped_corpus_name, validate_matrix,
+    agent_label, build_agent, build_ranker, cell_filter, corpus_names, load_config,
+    pipeline_labels, ranker_configs, ranker_label, validate_matrix,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -91,14 +91,14 @@ async fn main() -> Result<()> {
                     writeln!(out)?;
                 }
 
-                let scoped = scoped_corpus_name(corpus_name, pipeline_label);
-                let filter = PipelineFilter::for_corpus(&scoped);
+                let scoped = format!("{corpus_name} :: {pipeline_label}");
+                let filter = cell_filter(corpus_name, pipeline_label);
 
                 // Provenance gate: the ingestion process must have built
                 // this (pipeline, corpus) pair.
                 if agent.store().count_matching(&filter).await == 0 {
                     let msg = format!(
-                        "_Error: provenance '{scoped}' is not in the vector database at {} — run `ragrig-bench-ingest` first._",
+                        "_Error: pipeline '{pipeline_label}' is not indexed for corpus '{corpus_name}' in the vector database at {} — run `ragrig-bench-ingest` first._",
                         cli.workspace.display()
                     );
                     eprintln!("  {msg}");

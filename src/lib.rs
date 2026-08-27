@@ -9,7 +9,7 @@
 //!   database.
 //! - `ragrig-bench-interact` runs the benchmark matrix against that database.
 //!
-//! Chunk provenance — the pipeline-scoped corpus names (`name::pipeline`) —
+//! Chunk provenance — the corpus plus the pipeline id stamped at ingest —
 //! is the only addressing seam between the two processes; both derive them
 //! deterministically from the shared config.
 
@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use ragrig::{
     ChatAgentSpec, ChunkConfig, Chunker, Corpus, Document, DocumentData, DocumentId, Embedder,
     EmbedderSpec, FolderCorpus, Generator, HybridRrfRanker, MarkdownChunker, MmrDiversityRanker,
-    MutexGenerator, Ranker, SimpleGenerator, VectorStore, WeightedFusionRanker, available_chunkers,
+    MutexGenerator, PipelineFilter, Ranker, SimpleGenerator, VectorStore, WeightedFusionRanker,
+    available_chunkers,
     parsers::{DocumentParsers, build_parsers},
     types::{ChatConfig, EmbedConfig, EmbeddingProvider, ParseConfig, Provider},
 };
@@ -184,7 +185,7 @@ pub fn corpus_names(specs: &[String]) -> Result<Vec<String>> {
 }
 
 /// The stable pipeline label — shared by ingest and interact so the
-/// provenance names they derive always match.
+/// pipeline id stamped at ingest matches the query filter.
 pub fn pipeline_label(spec: &PipelineConfig) -> Result<String> {
     let parser_label = spec
         .parser
@@ -213,17 +214,23 @@ pub fn pipeline_labels(specs: &[PipelineConfig]) -> Result<Vec<String>> {
     specs.iter().map(pipeline_label).collect()
 }
 
-/// The store-level corpus name for one (corpus, pipeline) pair — the
-/// provenance by which interact addresses what ingest built.
-pub fn scoped_corpus_name(corpus: &str, pipeline: &str) -> String {
-    format!("{corpus}::{pipeline}")
+/// The provenance filter for one benchmark cell: the corpus plus the
+/// pipeline id stamped at ingest time.  The pipeline id selects one ingest
+/// run's whole chunk set — including documents parsed by different parsers —
+/// which parser/chunker-only filters cannot express on mixed corpora.
+pub fn cell_filter(corpus: &str, pipeline: &str) -> PipelineFilter {
+    PipelineFilter {
+        corpus: Some(corpus.to_string()),
+        pipeline: Some(pipeline.to_string()),
+        ..PipelineFilter::default()
+    }
 }
 
 // ── Resolution (ingestion side) ─────────────────────────────────────────────
 
 /// A pipeline resolved to concrete backends, ready to ingest.
 pub struct ResolvedPipeline {
-    /// Stable label — doubles as part of the provenance name.
+    /// Stable label — stamped as the pipeline id on every chunk.
     pub label: String,
     pub parsers: DocumentParsers,
     pub chunker: Box<dyn Chunker>,
@@ -247,19 +254,14 @@ pub enum CorpusSource {
 }
 
 impl ResolvedCorpus {
-    /// The store-level corpus name for one pipeline — see
-    /// [`scoped_corpus_name`].
-    pub fn scoped_name(&self, pipeline: &ResolvedPipeline) -> String {
-        scoped_corpus_name(&self.name, &pipeline.label)
-    }
-
-    /// The corpus to ingest for one pipeline.
-    pub fn corpus_for(&self, pipeline: &ResolvedPipeline) -> Box<dyn Corpus> {
-        let name = self.scoped_name(pipeline);
+    /// The corpus to ingest.  The corpus keeps its user-facing name —
+    /// pipeline identity is stamped per chunk via the pipeline id
+    /// (see [`cell_filter`]).
+    pub fn corpus_for(&self) -> Box<dyn Corpus> {
         match &self.source {
-            CorpusSource::Folder(path) => Box::new(FolderCorpus::named(name, path.clone())),
+            CorpusSource::Folder(path) => Box::new(FolderCorpus::named(&self.name, path.clone())),
             CorpusSource::Mock(count) => Box::new(MockCorpus {
-                name,
+                name: self.name.clone(),
                 count: *count,
             }),
         }

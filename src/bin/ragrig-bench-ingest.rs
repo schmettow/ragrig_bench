@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use ragrig::sync_corpus;
+use ragrig::sync_corpus_with_pipeline;
 use ragrig_bench::{
     build_embedder, chunk_config, load_config, resolve_corpora, resolve_pipelines, validate_corpora,
 };
@@ -67,16 +67,20 @@ async fn main() -> Result<()> {
     let store = ragrig::store::open_store(&cli.workspace).await?;
     for pipeline in &pipelines {
         for corpus_entry in &corpus_entries {
-            let scoped = corpus_entry.scoped_name(pipeline);
-            writeln!(log, "Ingesting provenance '{scoped}' …")?;
-            let corpus = corpus_entry.corpus_for(pipeline);
-            let stats = sync_corpus(
+            writeln!(
+                log,
+                "Ingesting pipeline '{}' into corpus '{}' …",
+                pipeline.label, corpus_entry.name
+            )?;
+            let corpus = corpus_entry.corpus_for();
+            let stats = sync_corpus_with_pipeline(
                 &*corpus,
                 &pipeline.parsers,
                 &*pipeline.chunker,
                 &*embedder,
                 &chunk_cfg,
                 &*store,
+                &pipeline.label,
             )
             .await?;
             let indexed: usize = stats.iter().map(|s| s.chunks).sum();

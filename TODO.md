@@ -25,8 +25,8 @@ runs the full matrix offline in milliseconds.
   (`EmbeddingMismatch`, `NoDocumentsFound`, `StoreCorrupt`,
   `EmbedModelNotFound`) so failures render as actionable notes instead of
   raw `anyhow` strings.
-- **Workspace hygiene** — a `--fresh` flag, and pruning of stale
-  `name::pipeline` corpora when pipelines are removed from the config.
+- **Workspace hygiene** — a `--fresh` flag, and pruning of stale pipeline ids
+  when pipelines are removed from the config.
 
 ## Config
 
