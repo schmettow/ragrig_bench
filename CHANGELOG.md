@@ -59,6 +59,13 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ### Added
 
+- **MIT license** — `LICENSE` file and the `license = "MIT"` package
+  metadata (same terms and copyright holder as ragrig).
+- **README overhaul** — reorganized around the goals, the two-process
+  pipeline, the complete configuration reference (queries vs. chat, agents,
+  corpora, pipelines, rankers, embed/parse, including the two backend name
+  spaces), mock testing (`--mock`, `mock.toml`, `--reindex`), and the MIT
+  license.
 - **TOML configuration via library config types**: the benchmark file is now
   TOML, and the `[agents.chat]`, `[embed]`, and `[parse]` sections reuse
   ragrig's own `ChatConfig`, `EmbedConfig`, and `ParseConfig` — fields omitted
