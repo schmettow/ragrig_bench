@@ -471,12 +471,12 @@ fn fnv1a(s: &str) -> u64 {
 
 #[async_trait]
 impl Embedder for MockEmbedder {
-    async fn embed(&self, texts: Vec<String>) -> Result<Vec<(String, Vec<f32>)>> {
+    async fn embed(&self, texts: Vec<String>) -> Result<Vec<ragrig::Embedding>> {
         Ok(texts
             .into_iter()
             .map(|text| {
                 let vector = Self::vectorize(&text);
-                (text, vector)
+                ragrig::Embedding { text, vector }
             })
             .collect())
     }

@@ -8,6 +8,9 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ### Changed
 
+- **`MockEmbedder` implements the `Embedding` contract** — ragrig's
+  `Embedder::embed` now returns `Vec<Embedding>` (`{ text, vector }`)
+  instead of `Vec<(String, Vec<f32>)`; the mock returns the named struct.
 - **Retrieval list sourced from `RagResponse.retrieved`** — ragrig's detailed
   responses now carry the store-ranked chunks, so the report prints them from
   the response instead of re-running `search_filtered` before every cell:
