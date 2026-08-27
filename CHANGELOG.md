@@ -86,6 +86,11 @@ All notable changes to `ragrig_bench` will be documented in this file.
   `[mock] answer for: {query}` response for every agent without an explicit
   `answer` — so the matrix structure can be tested without maintaining a
   separate mock config.  Agents with their own `answer` keep it.
+- **`--reindex/-r`** on ingest: delete the existing vector database and
+  rebuild it from scratch — the recovery path after switching embedders in
+  one workspace (the store is bound to the embedder that built it, so
+  without it ingestion fails with an embedder-mismatch error).  A no-op when
+  no database exists yet.
 - **Ranker as a config variable**: `[[rankers]]` sweeps ranking strategies at
   query time (`rrf`, `cosine`, `bm25`, `weighted` with alpha, `mmr` with
   lambda); the store's ranker is swapped per cell via `set_ranker` and the

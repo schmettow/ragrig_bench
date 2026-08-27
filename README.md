@@ -243,7 +243,12 @@ ragrig-bench-interact -m -w /tmp/mock_ws -o report.md test_rankers.toml
 `--mock` forces the mock embedder and gives every agent without an explicit
 `answer` a canned `[mock] answer for: {query}` response; agents with their
 own `answer` keep it, and corpora are untouched.  Use the same flag on both
-binaries — the workspace store is bound to one embedder.
+binaries — the workspace store is bound to one embedder.  **Switching
+embedders in one workspace** (live → `--mock`, or back) requires re-running
+ingest with `--reindex`: the old database cannot be reused, and without it
+ingestion fails with an embedder-mismatch error (e.g. `index was created
+with nomic-embed-text:latest (768 dims) but current embedder is mock-bow
+(128 dims)`).
 
 See `mock.toml` — the whole (agents × pipelines × queries) matrix runs in
 milliseconds with no network and no files on disk:
@@ -385,6 +390,10 @@ Options:
                          of stderr
   -m, --mock             Run with the offline mock embedder — test the
                          pipeline structure without a separate mock config
+  -r, --reindex          Delete the existing vector database and rebuild
+                         it from scratch — required after switching
+                         embedders (the store is bound to the embedder
+                         that built it)
   -h, --help             Print help
   -V, --version          Print version
 ```

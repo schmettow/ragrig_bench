@@ -31,6 +31,13 @@ struct Cli {
     /// without maintaining a separate mock config.
     #[arg(short = 'm', long)]
     mock: bool,
+
+    /// Delete the existing vector database and rebuild it from scratch.
+    /// The database is bound to the embedder that built it, so switch
+    /// embedders (e.g. live → `--mock`, or back) with `--reindex` — without
+    /// it, ingestion fails with an embedder-mismatch error.
+    #[arg(short = 'r', long)]
+    reindex: bool,
 }
 
 #[tokio::main]
@@ -71,6 +78,34 @@ async fn main() -> Result<()> {
         embedder.model_name(),
         embedder.dimension()
     )?;
+
+    // ── --reindex: drop the existing database so the new embedder can
+    //    rebuild it.  A store built by another embedder cannot be reused
+    //    (ragrig's embedder-metadata guard), so this is the recovery path
+    //    for the embedder-mismatch error.
+    if cli.reindex {
+        let store_path = cli.workspace.join(".ragrig_store");
+        if store_path.is_dir() {
+            writeln!(
+                log,
+                "Reindex: removing existing vector database {} …",
+                store_path.display()
+            )?;
+            std::fs::remove_dir_all(&store_path).with_context(|| {
+                format!("removing existing vector database {}", store_path.display())
+            })?;
+        } else if store_path.is_file() {
+            // The BruteForceStore is a single MessagePack file.
+            writeln!(
+                log,
+                "Reindex: removing existing vector database {} …",
+                store_path.display()
+            )?;
+            std::fs::remove_file(&store_path).with_context(|| {
+                format!("removing existing vector database {}", store_path.display())
+            })?;
+        }
+    }
     let chunk_cfg = chunk_config(&config.parse);
     let corpus_entries = resolve_corpora(&config.corpus_dirs, log.as_mut())?;
     let pipelines = resolve_pipelines(&config.pipelines)?;
