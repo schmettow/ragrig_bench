@@ -16,6 +16,11 @@ All notable changes to `ragrig_bench` will be documented in this file.
   `deserialize_with_defaults` TOML merge helper is deleted — `[agents.chat]`,
   `[embed]`, and `[parse]` fill omitted fields from the library defaults
   directly.
+- **`MockResponder` uses the structured-prompt seam**: the current query is
+  recorded by the agent's `prompt_hook` (`ChatPrompt.user`) into a shared
+  slot read back at generation time — the `rsplit_once("<|user|>\n")` /
+  `split("<|assistant|>")` wire-format parsing is gone, so the mock no longer
+  depends on ragrig's prompt layout.
 - **ragrig 1.0.0 API alignment**: Replaced the removed `embed_documents`
   entry point and the hand-rolled `.ragrig_embeddings.json` hash bookkeeping
   with `sync_corpus` over a `FolderCorpus::named` — new/changed documents are

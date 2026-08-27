@@ -25,6 +25,7 @@ use ragrig::{
 };
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 // ── Config schema ───────────────────────────────────────────────────────────
 
@@ -385,25 +386,26 @@ pub fn build_ranker(cfg: &RankerConfig) -> Result<Box<dyn Ranker>> {
 
 /// Canned-answer generator.  Implemented as a [`SimpleGenerator`] — the
 /// library's sync seam — wrapped in [`MutexGenerator`] to satisfy `Generator`.
+/// The current user query is recorded by the agent's `prompt_hook` right
+/// before generation (wired up in `build_agent`), so `{query}` substitution
+/// needs no string-parsing of the wire prompt.
 #[derive(Debug, Clone)]
 pub struct MockResponder {
     pub label: String,
     pub template: String,
+    /// Current user query, fed by the agent's [`ChatPrompt`] observer.
+    query: Arc<Mutex<Option<String>>>,
 }
 
 impl SimpleGenerator for MockResponder {
-    fn respond(&mut self, prompt: &str) -> String {
-        // The prompt ends with `<|user|>\n<query>\n<|assistant|>\n`; take the
-        // last user turn so `{query}` works in chat mode too.
-        let query = prompt
-            .rsplit_once("<|user|>\n")
-            .map(|(_, tail)| tail)
-            .unwrap_or(prompt)
-            .split("<|assistant|>")
-            .next()
-            .unwrap_or("")
-            .trim();
-        self.template.replace("{query}", query)
+    fn respond(&mut self, _prompt: &str) -> String {
+        // The agent's prompt hook records the query before generation;
+        // fall back to the un-substituted template if it was not wired up.
+        let query = self.query.lock().expect("mock query slot poisoned").clone();
+        match query {
+            Some(q) => self.template.replace("{query}", &q),
+            None => self.template.clone(),
+        }
     }
 
     fn backend_name(&self) -> &'static str {
@@ -551,6 +553,10 @@ pub fn build_agent(
     mock_cfg: &MockConfig,
     store: Box<dyn VectorStore>,
 ) -> Result<ragrig::RagAgent> {
+    // Shared slot: the agent's prompt hook records the current query here,
+    // the mock responder reads it back for `{query}` substitution — the
+    // structured-prompt seam instead of parsing the wire format.
+    let query_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let chat: Box<dyn Generator> = match &agent_cfg.answer {
         Some(template) => Box::new(MutexGenerator::new(MockResponder {
             label: agent_cfg
@@ -558,6 +564,7 @@ pub fn build_agent(
                 .clone()
                 .unwrap_or_else(|| "mock".to_string()),
             template: template.clone(),
+            query: query_slot.clone(),
         })),
         None => build_chat_agent(&agent_cfg.chat)?,
     };
@@ -573,6 +580,11 @@ pub fn build_agent(
         let prompt = std::fs::read_to_string(path)
             .with_context(|| format!("reading system prompt {}", path.display()))?;
         builder = builder.system_prompt(prompt);
+    }
+    if agent_cfg.answer.is_some() {
+        builder = builder.prompt_hook(move |prompt: &ragrig::ChatPrompt| {
+            *query_slot.lock().expect("mock query slot poisoned") = Some(prompt.user.clone());
+        });
     }
     builder.build()
 }
