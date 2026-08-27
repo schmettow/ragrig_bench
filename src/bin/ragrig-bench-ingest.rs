@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
             })?;
         }
     }
-    let chunk_cfg = chunk_config(&config.parse);
+    let chunk_cfg = chunk_config(&config.parse)?;
     let corpus_entries = resolve_corpora(&config.corpus_dirs, log.as_mut())?;
     let pipelines = resolve_pipelines(&config.pipelines)?;
 

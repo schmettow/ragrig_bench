@@ -64,13 +64,13 @@ corpus_dirs = ["coursework=~/Documents/coursework"]
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "qwen2.5:1.5b"
 context_tokens = 4096
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "gemma2:latest"
 context_tokens = 8192
 ```
@@ -117,11 +117,11 @@ REPL's profiles, and omitted fields fall back to the library defaults.
 label = "small-model"          # optional display label
 # answer = "canned {query}"    # optional: mock generator, replaces [agents.chat]
 [agents.chat]
-provider = "Ollama"            # "Ollama" | "Deepseek"
-model = "qwen2.5:1.5b"         # ignored for Deepseek
+provider = "ollama"            # "ollama" | "deepseek"
+model = "qwen2.5:1.5b"         # ignored for deepseek
 context_tokens = 4096          # context budget for retrieved chunks
-# deepseek_model = "deepseek-chat"   # Deepseek only
-# deepseek_api_key = "..."            # Deepseek only (or DEEPSEEK_API_KEY env)
+# deepseek_model = "deepseek-chat"   # deepseek only
+# deepseek_api_key = "..."            # deepseek only (or DEEPSEEK_API_KEY env)
 # context_size_mode = "Auto"          # "Auto" | "Forced"
 # system_prompt_path = "prompt.md"    # custom system prompt ({context} placeholder)
 # request_timeout_secs = 300          # per-request timeout, None = no timeout
@@ -206,25 +206,27 @@ lambda = 0.5        # diversity penalty (0.0–1.0)
 
 ```toml
 [embed]
-provider = "Ollama"                  # "Ollama" | "Fastembed" (internal-embed build)
+provider = "ollama"                  # "ollama" | "fastembed" (internal-embed build)
 model = "nomic-embed-text:latest"
 top_k = 50                           # chunks retrieved per search
 similarity_threshold = 0.04          # applied to cosine scores BEFORE RRF fusion
 # request_timeout_secs = 300
 
 [parse]
-pdf_parser = "Extract"               # ParseConfig backend: "Extract" (default) |
-                                     #   "Unpdf" | "Sink" | "Internal" |
-                                     #   "Kreuzberg" | "Vision" (feature-gated)
+pdf_parser = "extract"               # ParseConfig backend: "extract" (default) |
+                                     #   "unpdf" | "sink" | "internal" |
+                                     #   "kreuzberg" | "vision" (feature-gated)
 sloppy_pdf = false                   # never-panicking fallback parser
 chunk_size = 1024                    # target tokens per chunk
 chunk_overlap = 128                  # token overlap between chunks
 ```
 
-Note the two name spaces, mirroring ragrig: `[embed] provider` and
-`[agents.chat] provider` use the serde variant names (`"Ollama"`,
-`"Deepseek"`, `"Extract"`), while `[[pipelines]] parser` and `chunker` use
-the lowercase backend names (`"unpdf"`, `"markdown"`, …).
+Config values are lowercase throughout (matching the CLI backend names);
+the legacy PascalCase spellings (`"Ollama"`, `"Extract"`, …) from older
+profiles are still accepted.  The `[[pipelines]] parser` names are the
+parser registry's backend names, which differ from the `[parse]
+pdf_parser` spellings for two entries: `pdf-extract` ↔ `extract` and
+`sloppy-pdf` ↔ `internal`.
 
 ## Mock testing
 
@@ -333,19 +335,19 @@ corpus_dirs = ["biology=~/uni/biology"]
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "qwen2.5:1.5b"
 context_tokens = 2048
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "qwen2.5:1.5b"
 context_tokens = 4096
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "gemma2:latest"
 context_tokens = 8192
 ```
@@ -369,13 +371,13 @@ corpus_dirs = ["renewables=~/literature/renewables"]
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "gemma2:latest"
 context_tokens = 8192
 
 [[agents]]
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "llama3.2:latest"
 context_tokens = 8192
 

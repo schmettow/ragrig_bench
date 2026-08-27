@@ -16,7 +16,7 @@ corpus_dirs = ["book=@fixtures/html"]
 label = "gemma2"
 
 [agents.chat]
-provider = "Ollama"
+provider = "ollama"
 model = "gemma2:latest"
 context_tokens = 8192
 

@@ -38,23 +38,23 @@ context_tokens = 8192
 [[agents]]
 label = "deepseek-1024"
 [agents.chat]
-provider = "Deepseek"
+provider = "deepseek"
 context_tokens = 1024
 
 [[agents]]
 label = "deepseek-2048"
 [agents.chat]
-provider = "Deepseek"
+provider = "deepseek"
 context_tokens = 2048
 
 [[agents]]
 label = "deepseek-4096"
 [agents.chat]
-provider = "Deepseek"
+provider = "deepseek"
 context_tokens = 4096
 
 [[agents]]
 label = "deepseek-8192"
 [agents.chat]
-provider = "Deepseek"
+provider = "deepseek"
 context_tokens = 8192

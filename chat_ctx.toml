@@ -5,7 +5,7 @@
 #
 # `provider` and `model` are also omitted, so every agent uses ragrig's
 # default chat backend (Ollama, qwen3.5:9b).  Swap in a smaller model for a
-# faster sweep, e.g. add `provider = "Ollama"` / `model = "gemma2:latest"`
+# faster sweep, e.g. add `provider = "ollama"` / `model = "gemma2:latest"`
 # to each [agents.chat].
 
 corpus_dirs = ["book=@fixtures/html"]

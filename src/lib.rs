@@ -628,12 +628,12 @@ pub fn agent_label(cfg: &AgentConfig) -> String {
     )
 }
 
-/// The chunking configuration shared by every pipeline.
-pub fn chunk_config(parse: &ParseConfig) -> ChunkConfig {
-    ChunkConfig {
-        size: parse.chunk_size,
-        overlap: parse.chunk_overlap,
-    }
+/// The chunking configuration shared by every pipeline — built through the
+/// validated [`ChunkConfig::new`] constructor (the struct is
+/// `#[non_exhaustive]`), so a malformed `[parse]` section fails at ingest
+/// time.
+pub fn chunk_config(parse: &ParseConfig) -> Result<ChunkConfig> {
+    ChunkConfig::new(parse.chunk_size, parse.chunk_overlap)
 }
 
 #[cfg(test)]

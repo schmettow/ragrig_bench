@@ -8,6 +8,14 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ### Changed
 
+- **Lowercase backend names in configs** — `[agents.chat] provider`,
+  `[embed] provider`, and `[parse] pdf_parser` now use the canonical
+  lowercase spellings (`"ollama"`, `"extract"`, …); the legacy PascalCase
+  forms still load via ragrig's serde aliases.  Example configs updated.
+- **`chunk_config` uses the validated constructor** — `ChunkConfig` is
+  `#[non_exhaustive]` now; the bench builds it via `ChunkConfig::new` and
+  propagates the validation, so a malformed `[parse]` section fails at
+  ingest time.
 - **Rankers built via validated constructors** — ragrig's ranker fields are
   private now; `build_ranker` goes through `WeightedFusionRanker::new` /
   `MmrDiversityRanker::new`, so an out-of-range `alpha`/`lambda` in the
