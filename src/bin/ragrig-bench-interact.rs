@@ -91,7 +91,6 @@ async fn main() -> Result<()> {
                     writeln!(out)?;
                 }
 
-                let scoped = format!("{corpus_name} :: {pipeline_label}");
                 let filter = cell_filter(corpus_name, pipeline_label);
 
                 // Provenance gate: the ingestion process must have built

@@ -21,7 +21,7 @@ use ragrig::{
     MutexGenerator, PipelineFilter, Ranker, SimpleGenerator, VectorStore, WeightedFusionRanker,
     available_chunkers,
     parsers::{DocumentParsers, build_parsers},
-    types::{ChatConfig, EmbedConfig, EmbeddingProvider, ParseConfig, Provider},
+    types::{ChatConfig, EmbedConfig, ParseConfig, Provider},
 };
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -54,10 +54,10 @@ pub struct BenchmarkConfig {
     pub pipelines: Vec<PipelineConfig>,
     /// Embedding / retrieval settings.  Omitted fields use the library
     /// defaults (`EmbedConfig::default()`).
-    #[serde(default, deserialize_with = "deserialize_with_defaults")]
+    #[serde(default)]
     pub embed: EmbedConfig,
     /// Chunk size / overlap applied by every pipeline.
-    #[serde(default, deserialize_with = "deserialize_with_defaults")]
+    #[serde(default)]
     pub parse: ParseConfig,
     /// Mock components — offline, deterministic replacements for the live
     /// backends (see `mock.toml`).
@@ -105,7 +105,7 @@ pub struct AgentConfig {
     /// Chat settings — the library's `ChatConfig` (provider, model,
     /// generation params, context window, system-prompt file, timeout).
     /// Ignored when `answer` is set; omitted fields use `ChatConfig::default()`.
-    #[serde(default, deserialize_with = "deserialize_with_defaults")]
+    #[serde(default)]
     pub chat: ChatConfig,
 }
 
@@ -119,27 +119,6 @@ pub struct PipelineConfig {
     /// Chunker by name (`"markdown"`, `"token"`, `"chunkedrs-*"`, …).
     /// `None` = `MarkdownChunker`.
     pub chunker: Option<String>,
-}
-
-/// Deserialize `T` with missing fields filled from `T::default()`.  The
-/// library config types require every field, but benchmark files should only
-/// mention what they change.
-fn deserialize_with_defaults<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned + serde::Serialize + Default,
-{
-    let provided = toml::Value::deserialize(deserializer)?;
-    let mut merged = serde_json::to_value(T::default()).map_err(serde::de::Error::custom)?;
-    let provided = serde_json::to_value(provided).map_err(serde::de::Error::custom)?;
-    if let (serde_json::Value::Object(defaults), serde_json::Value::Object(provided)) =
-        (&mut merged, provided)
-    {
-        for (key, value) in provided {
-            defaults.insert(key, value);
-        }
-    }
-    serde_json::from_value(merged).map_err(serde::de::Error::custom)
 }
 
 /// Load the shared TOML config.
@@ -557,34 +536,11 @@ pub fn build_embedder(embed: &EmbedConfig, mock: bool) -> Result<Box<dyn Embedde
     if mock {
         return Ok(Box::new(MockEmbedder));
     }
-    let spec = match &embed.provider {
-        EmbeddingProvider::Ollama => EmbedderSpec::Ollama {
-            model: embed.model.clone(),
-            request_timeout_secs: embed.request_timeout_secs,
-        },
-        // Fastembed (when compiled in) and future variants go through
-        // `parse`, which reports the backends available in this build.
-        other => EmbedderSpec::parse(&format!("{other:?}").to_lowercase(), Some(&embed.model))?,
-    };
-    spec.build()
+    EmbedderSpec::try_from(embed)?.build()
 }
 
 fn build_chat_agent(chat: &ChatConfig) -> Result<Box<dyn Generator>> {
-    let spec = match &chat.provider {
-        Provider::Ollama => ChatAgentSpec::ollama(
-            chat.model.clone(),
-            chat.params.clone(),
-            chat.request_timeout_secs,
-        ),
-        Provider::Deepseek => ChatAgentSpec::deepseek(
-            chat.deepseek_model.clone(),
-            chat.deepseek_api_key.clone(),
-            chat.params.clone(),
-            chat.request_timeout_secs,
-        ),
-        other => bail!("chat provider {other:?} is not supported by this build"),
-    };
-    spec.build()
+    ChatAgentSpec::try_from(chat)?.build()
 }
 
 /// Build one [`RagAgent`](ragrig::RagAgent) for the matrix — a mock generator

@@ -6,6 +6,16 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ### Changed
 
+- **Backend construction via library conversions**: `build_chat_agent` and
+  `build_embedder` now go through `ChatAgentSpec::try_from(&ChatConfig)` /
+  `EmbedderSpec::try_from(&EmbedConfig)` — the config→spec mapping moved into
+  ragrig, and the bench no longer hand-rolls it or stringifies a `Debug` impl
+  for feature-gated embedding providers.
+- **Partial config tables handled by the library**: ragrig's config structs
+  now carry container-level `#[serde(default)]`, so the bench's own
+  `deserialize_with_defaults` TOML merge helper is deleted — `[agents.chat]`,
+  `[embed]`, and `[parse]` fill omitted fields from the library defaults
+  directly.
 - **ragrig 1.0.0 API alignment**: Replaced the removed `embed_documents`
   entry point and the hand-rolled `.ragrig_embeddings.json` hash bookkeeping
   with `sync_corpus` over a `FolderCorpus::named` — new/changed documents are
