@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use ragrig::{Embedder, PipelineFilter, RagAgent, RagResponse, VectorStore};
 use ragrig_bench::{
-    agent_label, build_agent, build_ranker, cell_filter, corpus_names, load_config,
-    pipeline_labels, ranker_configs, ranker_label, validate_matrix,
+    agent_label, apply_mock_mode, build_agent, build_ranker, cell_filter, corpus_names,
+    load_config, pipeline_labels, ranker_configs, ranker_label, validate_matrix,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -29,13 +29,23 @@ struct Cli {
     /// Write the Markdown report to this file instead of stdout.
     #[arg(short = 'o', long, value_name = "FILE")]
     out: Option<PathBuf>,
+
+    /// Run with offline mock components — deterministic embedder and
+    /// canned answers for every agent without an explicit `answer` — to
+    /// test the matrix structure without a separate mock config.
+    #[arg(short = 'm', long)]
+    mock: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = load_config(&cli.config)?;
+    let mut config = load_config(&cli.config)?;
+    if cli.mock {
+        apply_mock_mode(&mut config);
+        eprintln!("Mock mode: deterministic embedder + canned answers.");
+    }
     validate_matrix(&config)?;
 
     // The vector database is built by the ingestion process.

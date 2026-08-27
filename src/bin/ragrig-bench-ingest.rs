@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ragrig::sync_corpus_with_pipeline;
 use ragrig_bench::{
-    build_embedder, chunk_config, load_config, resolve_corpora, resolve_pipelines, validate_corpora,
+    apply_mock_mode, build_embedder, chunk_config, load_config, resolve_corpora, resolve_pipelines,
+    validate_corpora,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -24,13 +25,23 @@ struct Cli {
     /// Write the ingestion log to this file instead of stderr.
     #[arg(short = 'o', long, value_name = "FILE")]
     out: Option<PathBuf>,
+
+    /// Run with the offline mock embedder (deterministic bag-of-words)
+    /// instead of the `[embed]` backend — test the pipeline structure
+    /// without maintaining a separate mock config.
+    #[arg(short = 'm', long)]
+    mock: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = load_config(&cli.config)?;
+    let mut config = load_config(&cli.config)?;
+    if cli.mock {
+        apply_mock_mode(&mut config);
+        eprintln!("Mock mode: deterministic embedder + canned answers.");
+    }
     validate_corpora(&config)?;
 
     std::fs::create_dir_all(&cli.workspace)

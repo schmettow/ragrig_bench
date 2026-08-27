@@ -230,6 +230,21 @@ deterministic one:
 - a `corpus_dirs` entry `name=@mock/<n>` — `n` synthetic in-memory Markdown
   documents cycling through fixed topics.
 
+A dedicated `mock.toml` exercises all three.  Alternatively, run **any** real
+config through the mock components with the `--mock` / `-m` flag on both
+binaries — no separate mock config to maintain:
+
+```bash
+# Same config, same matrix, same report structure — no Ollama, no network:
+ragrig-bench-ingest  -m -w /tmp/mock_ws test_rankers.toml
+ragrig-bench-interact -m -w /tmp/mock_ws -o report.md test_rankers.toml
+```
+
+`--mock` forces the mock embedder and gives every agent without an explicit
+`answer` a canned `[mock] answer for: {query}` response; agents with their
+own `answer` keep it, and corpora are untouched.  Use the same flag on both
+binaries — the workspace store is bound to one embedder.
+
 See `mock.toml` — the whole (agents × pipelines × queries) matrix runs in
 milliseconds with no network and no files on disk:
 
@@ -368,6 +383,8 @@ Options:
                          [default: .ragrig_bench]
   -o, --out <FILE>       Write the ingestion log to this file instead
                          of stderr
+  -m, --mock             Run with the offline mock embedder — test the
+                         pipeline structure without a separate mock config
   -h, --help             Print help
   -V, --version          Print version
 ```
@@ -383,6 +400,9 @@ Options:
                          built by ragrig-bench-ingest [default: .ragrig_bench]
   -o, --out <FILE>       Write the Markdown report to this file
                          instead of stdout
+  -m, --mock             Run with offline mock components — deterministic
+                         embedder, canned answers — to test the matrix
+                         structure without a separate mock config
   -h, --help             Print help
   -V, --version          Print version
 ```

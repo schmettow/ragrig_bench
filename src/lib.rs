@@ -128,6 +128,24 @@ pub fn load_config(path: &str) -> Result<BenchmarkConfig> {
     toml::from_str(&raw).with_context(|| format!("parsing config {path}"))
 }
 
+/// The canned answer used for agents without an explicit `answer` template
+/// when the `--mock` CLI flag forces a fully offline run.
+const DEFAULT_MOCK_TEMPLATE: &str = "[mock] answer for: {query}";
+
+/// Apply the `--mock` CLI mode to a loaded config: force the mock embedder
+/// and give every agent without an explicit `answer` template a canned one,
+/// so any real config runs offline — same matrix, same report structure,
+/// no network.  Agents with their own `answer` keep it; corpora are left
+/// untouched.
+pub fn apply_mock_mode(config: &mut BenchmarkConfig) {
+    config.mock.embedder = true;
+    for agent in &mut config.agents {
+        if agent.answer.is_none() {
+            agent.answer = Some(DEFAULT_MOCK_TEMPLATE.to_string());
+        }
+    }
+}
+
 /// Ingestion-side validation: at least one corpus.
 pub fn validate_corpora(config: &BenchmarkConfig) -> Result<()> {
     if config.corpus_dirs.is_empty() {
@@ -613,5 +631,46 @@ pub fn chunk_config(parse: &ParseConfig) -> ChunkConfig {
     ChunkConfig {
         size: parse.chunk_size,
         overlap: parse.chunk_overlap,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_mode_forces_embedder_and_canned_answers() {
+        let mut config = BenchmarkConfig {
+            queries: vec!["q".into()],
+            chat: vec![],
+            corpus_dirs: vec!["x=dir".into()],
+            agents: vec![
+                AgentConfig {
+                    label: None,
+                    answer: None,
+                    chat: ChatConfig::default(),
+                },
+                AgentConfig {
+                    label: Some("tpl".into()),
+                    answer: Some("mine {query}".into()),
+                    chat: ChatConfig::default(),
+                },
+            ],
+            pipelines: vec![],
+            embed: EmbedConfig::default(),
+            parse: ParseConfig::default(),
+            mock: MockConfig::default(),
+            rankers: vec![],
+        };
+        apply_mock_mode(&mut config);
+
+        assert!(config.mock.embedder);
+        // No explicit template → the canned default is installed.
+        assert_eq!(
+            config.agents[0].answer.as_deref(),
+            Some(DEFAULT_MOCK_TEMPLATE)
+        );
+        // An explicit template is kept verbatim.
+        assert_eq!(config.agents[1].answer.as_deref(), Some("mine {query}"));
     }
 }
