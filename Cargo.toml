@@ -26,7 +26,8 @@ include = [
 # The path keeps local development on the in-tree ragrig; the version is
 # what crates.io users resolve.  ragrig 1.0.0 must be published before
 # ragrig-bench 0.3.0 can be.
-ragrig = { version = "1.0", path = "../ragrig", features = ["test-fixtures"] }
+# ragrig = { version = "1.0", path = "../ragrig", features = ["test-fixtures"] }
+ragrig = { version = "1", features = ["test-fixtures"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
 async-trait = "0.1"
