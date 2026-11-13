@@ -206,11 +206,20 @@ lambda = 0.5        # diversity penalty (0.0–1.0)
 
 ```toml
 [embed]
-provider = "ollama"                  # "ollama" | "fastembed" (internal-embed build)
-model = "nomic-embed-text:latest"
+provider = "ollama"                  # "ollama" | "fastembed" (internal-embed build) |
+                                     #   "openai" | "mistral" | "openrouter" | "llamacpp"
+model = "nomic-embed-text:latest"    # omit for the provider's default
+                                     #   (e.g. text-embedding-3-small for openai)
 top_k = 50                           # chunks retrieved per search
 similarity_threshold = 0.04          # applied to cosine scores BEFORE RRF fusion
 # request_timeout_secs = 300
+
+# Cloud credentials are environment-only (never stored in configs):
+#   OPENAI_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY
+# llama.cpp is keyless by default; LLAMACPP_API_BASE_URL overrides its URL
+# (default http://localhost:8080/v1) and LLAMACPP_API_KEY secures it.
+# llama.cpp embeddings require `llama-server --embeddings` with an
+# embedding model loaded.
 
 [parse]
 pdf_parser = "extract"               # ParseConfig backend: "extract" (default) |

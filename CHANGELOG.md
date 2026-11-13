@@ -4,6 +4,22 @@ All notable changes to `ragrig_bench` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Cloud embedding providers in `[embed]`** — `provider` now accepts
+  `openai`, `mistral`, `openrouter`, and `llamacpp` alongside `ollama` and
+  `fastembed`, backed by ragrig's `CloudEmbedder`.  Omitted `model` values
+  resolve to the provider's default; credentials come from
+  `OPENAI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, and the optional
+  `LLAMACPP_API_KEY`.  DeepSeek and Anthropic expose no embeddings API, so
+  they remain chat-only.
+
+### Changed
+
+- **ragrig dependency** — now `1.4` with a local path for in-tree
+  development; the path is stripped on publish, so ragrig 1.4 must be on
+  crates.io before a benchmark release naming the cloud providers.
+
 ## [0.3.0] — 2026-08-27
 
 ### Changed

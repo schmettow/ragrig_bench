@@ -675,4 +675,24 @@ mod tests {
         // An explicit template is kept verbatim.
         assert_eq!(config.agents[1].answer.as_deref(), Some("mine {query}"));
     }
+
+    #[test]
+    fn embed_config_accepts_cloud_providers() {
+        let config: BenchmarkConfig = toml::from_str(
+            r#"
+queries = ["q"]
+corpus_dirs = ["papers=./docs"]
+
+[embed]
+provider = "openai"
+model = "text-embedding-3-large"
+"#,
+        )
+        .expect("cloud embedding provider should deserialize");
+        assert_eq!(
+            config.embed.provider,
+            ragrig::types::EmbeddingProvider::OpenAi
+        );
+        assert_eq!(config.embed.model, "text-embedding-3-large");
+    }
 }
