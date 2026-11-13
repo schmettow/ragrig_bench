@@ -1,6 +1,6 @@
 [package]
 name = "ragrig-bench"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 description = "RAG quality evaluator — benchmark local LLMs for retrieval-augmented generation on your own documents, pipelines, and rankers."
@@ -27,7 +27,7 @@ include = [
 # what crates.io users resolve.  The path is stripped on publish, so ragrig
 # 1.4 (cloud embedders) must be on crates.io before ragrig-bench ships a
 # release that names these providers.
-ragrig = { version = "1.4", path = "../ragrig", features = ["test-fixtures"] }
+ragrig = { version = "1.4", features = ["test-fixtures"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
 async-trait = "0.1"

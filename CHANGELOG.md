@@ -2,7 +2,7 @@
 
 All notable changes to `ragrig_bench` will be documented in this file.
 
-## [Unreleased]
+## [0.3.1] — 2026-11-13
 
 ### Added
 
